@@ -1,3 +1,10 @@
+## v0.24.0
+
+- Update DSH dependencies to 0.2.1-rc.2 and Cordis utilities to their matching stable releases.
+- Declare supported DSH versions through `engines.dsh`.
+
+Restart DSH and refresh the browser after upgrading.
+
 ## v0.23.0
 
 - Wait for agent quiescence before queuing the next review round, avoiding event-publication reentry.

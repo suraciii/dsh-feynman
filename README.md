@@ -6,8 +6,10 @@ The plugin supplies 11 workflows, 16 session commands, 16 research skills, and f
 
 ## Install
 
+Requires DeepSeek Harness `>=0.2.1-rc.2 <0.3.0`. Restart DSH and refresh the browser after upgrading.
+
 ```sh
-dsh plugin --profile web add --save-exact @maci0/dsh-feynman@0.23.0
+dsh plugin --profile web add --save-exact @maci0/dsh-feynman@0.24.0
 ```
 
 Install as a bundle, then restart `dsh web` and refresh the browser. The package's own `cordis.patch.yml` mounts its writable configuration row. Do not also insert the row into the profile patch: Cordis does not deduplicate row IDs.
