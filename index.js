@@ -10,6 +10,7 @@
  * For local development, `dsh plugin --profile <name> add <path-to-checkout>`.
  */
 import { WORKFLOWS, SESSION_COMMANDS, THINKING_LEVELS, buildPrompt, parseLoopArgs, parseSummarizeArgs, loopFollowupPrompt } from './prompts.js'
+
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import { mountResearchTools } from './lib/research-tools.js'
