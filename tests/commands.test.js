@@ -48,6 +48,19 @@ test('/feynman thinking rejects a level the route does not advertise', async () 
   assert.match(result.text, /Supported: low, max/)
 })
 
+test('/feynman run carries the role thinking level and tool policy', async () => {
+  let handler
+  const messages = []
+  const agent = { session: { id: 'run-role' }, followup: (message) => messages.push(message), inject: (message) => messages.push(message) }
+  apply({ effect: (fn) => fn(), commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined }, {})
+  const result = await handler({ rawInput: 'run writer draft the methods section', agent, attachments: [] })
+  assert.equal(result.kind, 'success')
+  const text = messages.at(-1).content.map((part) => part.text ?? '').join('\n')
+  assert.match(text, /Thinking level: medium/)
+  assert.match(text, /Allowed tools: read, bash, grep, glob, write, edit/)
+  assert.doesNotMatch(text, /web_search|feynman_fetch_content/)
+})
+
 test('all session commands mapped', () => {
   for (const cmd of ['help', 'init', 'outputs', 'btw', 'thinking', 'keys', 'doctor', 'status']) {
     assert.ok(SESSION_COMMANDS[cmd], `missing /${cmd}`)

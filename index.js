@@ -479,7 +479,9 @@ export function apply(ctx, config = {}) {
       run: (inv) => {
         const [, role, task] = inv.rawInput.match(/^(\S+)\s+([\s\S]+)$/) ?? []
         if (!Object.hasOwn(ROLES, role ?? '') || !task?.trim()) return err('Usage: /feynman run <researcher|reviewer|writer|verifier> <task>')
-        inv.agent.followup(userMessage(inv, `Run the ${role} research role for this task: ${task}\n\n${ROLES[role].content}\n\nDelegate through the visible DSH subagent tool when available, including these role rules and the task in its prompt; otherwise perform the role as lead. Use file outputs and verify completion before delivery.`))
+        const spec = ROLES[role]
+        const policy = spec.tools === null ? 'All visible tools are allowed.' : `Allowed tools: ${spec.tools.join(', ')}. Do not use tools outside this list.`
+        inv.agent.followup(userMessage(inv, `Run the ${role} research role for this task: ${task}\n\nThinking level: ${spec.thinking}. ${policy}\n\n${spec.content}\n\nDelegate through the visible DSH subagent tool when available, including these role rules, the thinking level (as reasoning_effort only when the schema exposes it) and the task in its prompt; otherwise perform the role as lead. Use file outputs and verify completion before delivery.`))
         return { kind: 'success', text: `${role} task queued as the next turn.` }
       },
       alpha: async (inv) => {
