@@ -109,6 +109,17 @@ Upstream-retired `rank`, `paper`, `watch`, `jobs`, `preview`, `feynman-model` an
 
 The [capability comparison](docs/upstream-20261013.md) maps upstream research capabilities to this release. Pi-specific provider, terminal and session controls remain the host's responsibility.
 
+## Research-quality evals
+
+`evals/` runs a fixed 12-question set through the real plugin in a one-shot headless session and scores the workspaces deterministically: `done` (final artifact + provenance sidecar), `plan`, provenance fields, Sources count, distinct arXiv/DOI identifiers, `TODO` markers, blocked verification, and wall time. There is no model judge.
+
+```sh
+export DEEPSEEK_API_KEY=...   # headless reads the launching environment, not the GUI store
+node evals/run.mjs --model deepseek/official --ids q01,q04 --workflow lit
+```
+
+The run uses a throwaway `DSH_HOME` and a generated `--patch` overlay that mounts the plugin by absolute path, so it never edits a DSH profile or installs a package. Stage A covers the artifact contract only; citation validity (`valid`, `title`) and key-paper recall (`recall`) are stage B and are not scored yet. The first baseline has not been run. See [evals/README.md](evals/README.md) for licensing, the fidelity caveat, and how to compare before/after runs.
+
 ## Development
 
 ```sh

@@ -1,0 +1,264 @@
+#!/usr/bin/env node
+/**
+ * Research-quality eval runner for dsh-feynman.
+ *
+ * Runs a fixed question set through the real plugin in a one-shot headless DSH
+ * session, then scores each workspace with the deterministic checks in
+ * `score.mjs`. It never reads a model judge and never writes to the user's DSH
+ * profile: the plugin is mounted through a temporary `--patch` overlay and the
+ * whole run uses a throwaway `DSH_HOME`.
+ *
+ * Usage:
+ *   node evals/run.mjs --model deepseek/official [--ids q01,q04] [--workflow lit]
+ *   node evals/run.mjs --score-only <workdir> --slug <slug> --workflow lit
+ *
+ * Credentials must be exported in the launching environment (headless ignores
+ * the GUI's saved sign-in). Without them each run fails fast with
+ * `MISSING_CREDENTIAL`, and the runner says so instead of writing fake scores.
+ *
+ * @module dsh-feynman/evals/run
+ */
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { buildPrompt, slugify } from '../prompts.js'
+import { scoreWorkdir } from './score.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const REPO = dirname(HERE)
+const RESULTS = join(HERE, 'results')
+
+function usage() {
+  return `Research-quality evals for dsh-feynman.
+
+  node evals/run.mjs [options]
+
+Options:
+  --model <label>        Model route label recorded in results (default: $DSH_EVAL_MODEL or "default").
+  --ids q01,q04          Questions to run (default: all in --questions).
+  --questions <path>     Question set (default: evals/questions.jsonl).
+  --workflow lit|deepresearch   Workflow to run (default: lit).
+  --results-dir <dir>    Where result files go (default: evals/results).
+  --work-root <dir>      Where per-question workspaces and DSH_HOME live.
+                         Default: $XDG_CACHE_HOME/dsh-feynman-evals or ~/.cache/dsh-feynman-evals.
+  --timeout-min <n>      Per-question wall-clock limit (default: 45).
+  --score-only <dir>     Score an existing workspace; requires --slug and --workflow.
+  --slug <slug>          Slug for --score-only.
+  --help                 Show this help.
+
+Workspaces are kept under --work-root so a scorer change can rescore them
+without rerunning the model (mirrors upstream's --rescore).
+
+Credentials: export the route's key (for example DEEPSEEK_API_KEY) before running;
+headless reads the launching environment, not the GUI credential store.
+
+Scores: done (final artifact + provenance), plan, provenance_fields, sources,
+cites, todos, blocked, words, wall. Citation validity and key-paper recall are
+stage B and are not scored here.`
+}
+
+function parseArgs(argv) {
+  const options = {
+    model: process.env.DSH_EVAL_MODEL ?? 'default',
+    ids: undefined,
+    questions: join(HERE, 'questions.jsonl'),
+    workflow: 'lit',
+    workRoot: join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'dsh-feynman-evals'),
+    resultsDir: RESULTS,
+    timeoutMin: 45,
+    scoreOnly: undefined,
+    slug: undefined,
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    const next = () => {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('--')) throw new Error(`${arg} needs a value`)
+      index += 1
+      return value
+    }
+    switch (arg) {
+      case '--help': case '-h': options.help = true; break
+      case '--model': options.model = next(); break
+      case '--ids': options.ids = next().split(',').map(id => id.trim()).filter(Boolean); break
+      case '--questions': options.questions = resolve(next()); break
+      case '--workflow': options.workflow = next(); break
+      case '--work-root': options.workRoot = resolve(next()); break
+      case '--results-dir': options.resultsDir = resolve(next()); break
+      case '--timeout-min': options.timeoutMin = Number(next()); break
+      case '--score-only': options.scoreOnly = resolve(next()); break
+      case '--slug': options.slug = next(); break
+      default: throw new Error(`unknown argument: ${arg}`)
+    }
+  }
+  if (!['lit', 'deepresearch'].includes(options.workflow)) throw new Error(`--workflow must be lit or deepresearch`)
+  if (!Number.isFinite(options.timeoutMin) || options.timeoutMin <= 0) throw new Error('--timeout-min must be positive')
+  return options
+}
+
+function readQuestions(path) {
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map(line => JSON.parse(line))
+}
+
+function gitState() {
+  try {
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).trim()
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: REPO, encoding: 'utf8' }).trim() !== ''
+    return { sha, dirty }
+  } catch {
+    return { sha: 'unknown', dirty: null }
+  }
+}
+
+function mountPatch(pluginPath) {
+  return `# Generated by evals/run.mjs: mount the plugin without touching any DSH profile.
+- id: system-prompt
+  config:
+    personaPrefix: |-
+      You are Feynman, a research-first AI agent.
+- insert:
+    - id: feynman-eval-mount
+      name: ${pluginPath}
+      config: {}
+`
+}
+
+function runHeadless({ task, cwd, patch, home, timeoutMs, bin }) {
+  return new Promise(resolvePromise => {
+    const started = Date.now()
+    const child = spawn(bin, ['--profile', 'headless', '--patch', patch, '--json', '--permission-mode', 'workspace-write', '-'], {
+      cwd,
+      env: { ...process.env, DSH_HOME: home },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('error', error => {
+      clearTimeout(timer)
+      resolvePromise({ code: null, error: `cannot launch ${bin}: ${error.message}`, session: undefined, stderr: '', wall: (Date.now() - started) / 1000 })
+    })
+    child.on('close', code => {
+      clearTimeout(timer)
+      let error
+      let session
+      for (const line of stdout.split('\n')) {
+        if (!line.trim().startsWith('{')) continue
+        try {
+          const event = JSON.parse(line)
+          if (event.type === 'session') session = event.sessionId
+          if (event.type === 'final' && event.reason?.error?.message) error = event.reason.error.message
+        } catch {}
+      }
+      resolvePromise({ code, error: timedOut ? `timeout after ${Math.round(timeoutMs / 1000)}s` : error, session, stderr: stderr.trim().split('\n').slice(-6).join('\n').slice(0, 2000), wall: (Date.now() - started) / 1000 })
+    })
+    child.stdin.end(task)
+  })
+}
+
+function credentialGuidance(error) {
+  return error !== undefined && /MISSING_CREDENTIAL|no API key/i.test(error)
+}
+
+function summary(rows, options, git) {
+  const head = `# Evals: ${options.workflow} · ${options.model}\n\n` +
+    `- Date: ${new Date().toISOString()}\n- Git: ${git.sha}${git.dirty ? ' (dirty)' : ''}\n- Questions: ${rows.length}\n` +
+    `- Scores: done / plan / provenance fields / sources / cites / todos / blocked / wall seconds\n` +
+    `- Stage A only: citation validity and key-paper recall are not scored here.\n\n` +
+    '| id | done | plan | prov | cites | sources | todos | blocked | wall | final | error |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|\n'
+  const body = rows.map(row =>
+    `| ${row.id} | ${row.done} | ${row.plan} | ${row.provenance_fields}/8 | ${row.cites} | ${row.sources} | ${row.todos} | ${row.blocked} | ${row.wall_seconds.toFixed(1)} | ${row.final ?? '—'} | ${row.error === undefined ? '' : row.error.slice(0, 80).replaceAll('|', '\\|')} |`,
+  ).join('\n')
+  const done = rows.filter(row => row.done === 1).length
+  const blocked = rows.filter(row => row.blocked === 1).length
+  return `${head}${body}\n\n- done: ${done}/${rows.length}\n- blocked verification: ${blocked}/${rows.length}\n`
+}
+
+function resultPath(options) {
+  const stamp = new Date().toISOString().slice(0, 10)
+  const model = options.model.replaceAll(/[^a-zA-Z0-9._-]+/g, '_')
+  const base = `${stamp}-${options.workflow}-${model}`
+  let path = join(options.resultsDir, `${base}.jsonl`)
+  for (let suffix = 2; existsSync(path); suffix += 1) path = join(RESULTS, `${base}-${suffix}.jsonl`)
+  return path
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) { console.log(usage()); return }
+  if (options.scoreOnly !== undefined) {
+    if (options.slug === undefined) throw new Error('--score-only needs --slug')
+    const row = scoreWorkdir({ workdir: options.scoreOnly, slug: options.slug, workflow: options.workflow })
+    console.log(JSON.stringify(row, null, 2))
+    return
+  }
+
+  const questions = readQuestions(options.questions).filter(question => options.ids === undefined || options.ids.includes(question.id))
+  if (questions.length === 0) throw new Error('no questions matched --ids')
+
+  const bin = process.env.DSH_BIN ?? 'dsh'
+  const git = gitState()
+  const runId = new Date().toISOString().replaceAll(/[:.]/g, '-')
+  const home = join(options.workRoot, 'dsh-home')
+  const patch = join(options.workRoot, 'mount.patch.yml')
+  mkdirSync(options.workRoot, { recursive: true })
+  mkdirSync(options.resultsDir, { recursive: true })
+  writeFileSync(patch, mountPatch(join(REPO, 'index.js')))
+
+  const rows = []
+  for (const question of questions) {
+    const slug = slugify(question.question)
+    const workdir = join(options.workRoot, runId, question.id)
+    mkdirSync(workdir, { recursive: true })
+    const task = buildPrompt(options.workflow, question.question)
+    writeFileSync(join(workdir, 'task.txt'), task)
+    process.stderr.write(`[${question.id}] ${options.workflow} · ${slug}\n`)
+    const run = await runHeadless({ task, cwd: workdir, patch, home, timeoutMs: options.timeoutMin * 60_000, bin })
+    const score = scoreWorkdir({ workdir, slug, workflow: options.workflow })
+    const row = {
+      id: question.id,
+      field: question.field,
+      question: question.question,
+      workflow: options.workflow,
+      model: options.model,
+      git: git.sha,
+      dirty: git.dirty,
+      workdir,
+      session: run.session ?? null,
+      exit_code: run.code,
+      error: run.error,
+      stderr: run.stderr === '' ? undefined : run.stderr,
+      wall_seconds: run.wall,
+      ...score,
+    }
+    rows.push(row)
+    process.stderr.write(`[${question.id}] done=${row.done} cites=${row.cites} sources=${row.sources} wall=${row.wall_seconds.toFixed(1)}s${row.error === undefined ? '' : ` error=${row.error}`}\n`)
+    if (credentialGuidance(run.error)) {
+      process.stderr.write('\nMissing model credentials: export the route key (for example DEEPSEEK_API_KEY) and rerun. Headless ignores GUI-saved sign-in. Aborting remaining questions; no results written.\n')
+      process.exitCode = 1
+      return
+    }
+  }
+
+  const path = resultPath(options)
+  writeFileSync(path, `${rows.map(row => JSON.stringify(row)).join('\n')}\n`)
+  const markdown = summary(rows, options, git)
+  const mdPath = path.replace(/\.jsonl$/, '.md')
+  writeFileSync(mdPath, markdown)
+  process.stderr.write(`\nwrote ${path}\nwrote ${mdPath}\n`)
+  console.log(markdown)
+}
+
+main().catch(error => {
+  console.error(`evals: ${error instanceof Error ? error.message : String(error)}`)
+  process.exitCode = 1
+})
