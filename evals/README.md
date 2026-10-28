@@ -59,7 +59,7 @@ Nothing is installed, no profile file is edited, and the user's real `$DSH_HOME`
 
 ## Artifact naming
 
-The scorer accepts both conventions: this plugin's `outputs/<slug>-brief.md` (deepresearch) and `outputs/<slug>-lit-review.md` (lit), its `papers/<slug>.md` fallback, and upstream's `outputs/<slug>.md`. Provenance is looked up next to the final artifact and by slug. A run that writes the wrong name scores `done: 0`, which is the point.
+The scorer prefers upstream's `outputs/<slug>.md` (deepresearch and lit) with `outputs/<slug>.provenance.md`, the `papers/<slug>.md` fallback, and still accepts this plugin's legacy `outputs/<slug>-brief.md` and `outputs/<slug>-lit-review.md` so older runs remain scorable. Provenance is looked up next to the final artifact and by slug. A run that writes the wrong name scores `done: 0`, which is the point.
 
 ## Comparing runs
 

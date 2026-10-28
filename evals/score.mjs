@@ -25,8 +25,8 @@ export const PROVENANCE_FIELDS = [
 
 /** Final-artifact names by workflow, most specific first, then the upstream fallback. */
 const FINAL_CANDIDATES = {
-  lit: slug => [`outputs/${slug}-lit-review.md`, `outputs/${slug}.md`],
-  deepresearch: slug => [`outputs/${slug}-brief.md`, `outputs/${slug}.md`],
+  lit: slug => [`outputs/${slug}.md`, `outputs/${slug}-lit-review.md`],
+  deepresearch: slug => [`outputs/${slug}.md`, `outputs/${slug}-brief.md`],
 }
 
 function isFile(path) {

@@ -386,7 +386,7 @@ async function initHandler(invocation) {
 
 function outputsHandler(invocation) {
   return followupHandler(invocation,
-    'List research artifacts under outputs/, papers/, experiments/, and notes/ when present (group outputs by workflow: *-brief.md deepresearch, *-lit-review.md + *-lit-review.provenance.md lit, *-review.md review, *-audit.md audit, *-replication-plan.md replicate, *-recipe.md recipe, *-compare.md compare, *-draft.md draft, *-summary.md summarize). Include provenance, plans, notes, and any older research artifacts found. Summarize what each contains in one line; list paths, not raw source bodies.',
+    'List research artifacts under outputs/, papers/, experiments/, and notes/ when present (group outputs by workflow: <slug>.md deepresearch/lit, *-comparison.md compare, *-review.md review, *-audit.md audit, *-replication-plan.md replicate, *-recipe.md recipe, *-draft.md draft, *-summary.md summarize). Include provenance, plans, notes, and any older research artifacts found. Summarize what each contains in one line; list paths, not raw source bodies.',
     'Artifact listing queued as the next turn.')
 }
 

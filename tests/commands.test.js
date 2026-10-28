@@ -151,7 +151,7 @@ test('summarize dispatcher validates before queuing and preserves attachments an
 test('upstream workflow contracts keep continuation, provenance, and evidence boundaries', () => {
   assert.match(buildPrompt('deepresearch', 'topic'), /continue immediately in the same turn/)
   assert.match(buildPrompt('deepresearch', 'show me the plan first'), /only when the user explicitly asked to review the plan first/)
-  assert.match(buildPrompt('lit', 'topic'), /outputs\/topic-lit-review\.provenance\.md/)
+  assert.match(buildPrompt('lit', 'topic'), /outputs\/topic\.provenance\.md/)
   const research = buildPrompt('review', 'paper.pdf')
   assert.match(research, /two independent indexes/)
   assert.match(research, /launch receipt is not completion/)
@@ -619,7 +619,7 @@ test('every workflow brief is byte-identical to the reviewed text', () => {
   digest.update(loopFollowupPrompt('paper X', 2, 2))
   assert.equal(
     digest.digest('hex'),
-    '4dc3b8544fe2a6cf12e4c8431e6b8b29b6b7d58f3c18763c786481be97bef652',
+    '84bb3ef1278a871f762c40a3362c87f83558ee5a39a97041a0c5a6adfa8d0308',
     'prompt text changed: update the digest deliberately',
   )
 })

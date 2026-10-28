@@ -72,13 +72,13 @@ describe('score helpers', () => {
 describe('scoreWorkdir', () => {
   it('scores the lit naming convention as done with all provenance fields', () => {
     const root = fixture()
-    writeFileSync(join(root, 'outputs/test-topic-lit-review.md'), FINAL)
-    writeFileSync(join(root, 'outputs/test-topic-lit-review.provenance.md'), PROVENANCE)
+    writeFileSync(join(root, 'outputs/test-topic.md'), FINAL)
+    writeFileSync(join(root, 'outputs/test-topic.provenance.md'), PROVENANCE)
     writeFileSync(join(root, 'outputs/.plans/test-topic.md'), '# Plan\n')
     writeFileSync(join(root, 'outputs/.drafts/test-topic-research-direct.md'), '# Notes\n')
     const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'lit' })
-    assert.equal(row.final, 'outputs/test-topic-lit-review.md')
-    assert.equal(row.provenance, 'outputs/test-topic-lit-review.provenance.md')
+    assert.equal(row.final, 'outputs/test-topic.md')
+    assert.equal(row.provenance, 'outputs/test-topic.provenance.md')
     assert.equal(row.done, 1)
     assert.equal(row.plan, 1)
     assert.equal(row.drafts, 1)
@@ -93,11 +93,18 @@ describe('scoreWorkdir', () => {
 
   it('scores the deepresearch naming convention and upstream fallback', () => {
     const root = fixture()
-    writeFileSync(join(root, 'outputs/test-topic-brief.md'), FINAL)
-    writeFileSync(join(root, 'outputs/test-topic-brief.provenance.md'), PROVENANCE)
+    writeFileSync(join(root, 'outputs/test-topic.md'), FINAL)
+    writeFileSync(join(root, 'outputs/test-topic.provenance.md'), PROVENANCE)
     const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'deepresearch' })
-    assert.equal(row.final, 'outputs/test-topic-brief.md')
+    assert.equal(row.final, 'outputs/test-topic.md')
     assert.equal(row.done, 1)
+
+    const legacy = fixture()
+    writeFileSync(join(legacy, 'outputs/test-topic-brief.md'), FINAL)
+    writeFileSync(join(legacy, 'outputs/test-topic-brief.provenance.md'), PROVENANCE)
+    const legacyRow = scoreWorkdir({ workdir: legacy, slug: 'test-topic', workflow: 'deepresearch' })
+    assert.equal(legacyRow.final, 'outputs/test-topic-brief.md')
+    assert.equal(legacyRow.done, 1)
 
     const upstream = fixture()
     writeFileSync(join(upstream, 'papers/test-topic.md'), FINAL)
@@ -109,7 +116,7 @@ describe('scoreWorkdir', () => {
 
   it('reports done=0 when the provenance sidecar is missing', () => {
     const root = fixture()
-    writeFileSync(join(root, 'outputs/test-topic-lit-review.md'), FINAL)
+    writeFileSync(join(root, 'outputs/test-topic.md'), FINAL)
     const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'lit' })
     assert.equal(row.done, 0)
     assert.equal(row.provenance, null)
@@ -119,15 +126,15 @@ describe('scoreWorkdir', () => {
   it('does not mistake a source-check sidecar for the final artifact', () => {
     const root = fixture()
     writeFileSync(join(root, 'outputs/test-topic-abc123-source-check.md'), 'passages only')
-    writeFileSync(join(root, 'outputs/test-topic-lit-review.md'), FINAL)
-    assert.equal(findFinal(root, 'test-topic', 'lit'), 'outputs/test-topic-lit-review.md')
-    assert.equal(findProvenance(root, 'outputs/test-topic-lit-review.md', 'test-topic'), undefined)
+    writeFileSync(join(root, 'outputs/test-topic.md'), FINAL)
+    assert.equal(findFinal(root, 'test-topic', 'lit'), 'outputs/test-topic.md')
+    assert.equal(findProvenance(root, 'outputs/test-topic.md', 'test-topic'), undefined)
   })
 
   it('keeps blocked and TODO runs scorable', () => {
     const root = fixture()
-    writeFileSync(join(root, 'outputs/test-topic-lit-review.md'), `${FINAL}\nTODO: verify the third source.\nVerification: BLOCKED\n`)
-    writeFileSync(join(root, 'outputs/test-topic-lit-review.provenance.md'), PROVENANCE.replace('PASS WITH NOTES', 'BLOCKED'))
+    writeFileSync(join(root, 'outputs/test-topic.md'), `${FINAL}\nTODO: verify the third source.\nVerification: BLOCKED\n`)
+    writeFileSync(join(root, 'outputs/test-topic.provenance.md'), PROVENANCE.replace('PASS WITH NOTES', 'BLOCKED'))
     const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'lit' })
     assert.equal(row.done, 1)
     assert.equal(row.todos, 1)
@@ -150,8 +157,8 @@ process.stdin.on('end', () => {
   const slug = 'demo-topic'
   mkdirSync(join(process.cwd(), 'outputs/.plans'), { recursive: true })
   writeFileSync(join(process.cwd(), 'outputs/.plans', slug + '.md'), '# Plan\\n')
-  writeFileSync(join(process.cwd(), 'outputs', slug + '-lit-review.md'), '# demo\\n\\narXiv:2408.03314\\n\\n## Sources\\n\\n1. https://arxiv.org/abs/2408.03314\\n')
-  writeFileSync(join(process.cwd(), 'outputs', slug + '-lit-review.provenance.md'), '# Provenance\\n\\n- **Date:** 2026-10-28\\n- **Rounds:** 1\\n- **Sources consulted:** 1\\n- **Sources accepted:** 1\\n- **Sources rejected:** 0\\n- **Verification:** PASS\\n- **Plan:** outputs/.plans/demo-topic.md\\n- **Research files:** none\\n')
+  writeFileSync(join(process.cwd(), 'outputs', slug + '.md'), '# demo\\n\\narXiv:2408.03314\\n\\n## Sources\\n\\n1. https://arxiv.org/abs/2408.03314\\n')
+  writeFileSync(join(process.cwd(), 'outputs', slug + '.provenance.md'), '# Provenance\\n\\n- **Date:** 2026-10-28\\n- **Rounds:** 1\\n- **Sources consulted:** 1\\n- **Sources accepted:** 1\\n- **Sources rejected:** 0\\n- **Verification:** PASS\\n- **Plan:** outputs/.plans/demo-topic.md\\n- **Research files:** none\\n')
   process.stdout.write(JSON.stringify({ type: 'session', sessionId: 'stub' }) + '\\n')
   process.stdout.write(JSON.stringify({ type: 'final', reason: { kind: 'stop' }, text: 'ok' }) + '\\n')
 })
