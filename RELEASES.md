@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Add `feynman_web_search`: `queries`, `numResults` 1–20, `recencyFilter`, `domainFilter` include/exclude, and `includeContent` over the DSH web seam. Filters are applied to returned sources (the host tool cannot filter provider-side), undated sources are kept and marked, and included pages are stored for `feynman_search_content`. Host `web_search` remains for plain lookups.
 - Align deepresearch/lit/compare artifact names with upstream: `outputs/<slug>.md` and `outputs/<slug>.provenance.md` for deepresearch/lit, and `outputs/<slug>-comparison.md` for compare. The eval scorer still accepts the legacy `-brief.md`/`-lit-review.md` suffixes for older runs.
 - Make `/feynman thinking` a real setting: it records the level in DSH model selection (validated against the route's advertised efforts when the adapter exposes them) instead of injecting a preference note, matching upstream's Pi `/thinking` behavior.
 - Restore upstream role parameters: `feynman_research_role` now returns each role's `thinking` level (researcher/reviewer high, verifier/writer medium) and the upstream tool policy (writer has no retrieval tools), plus a `delegation` block. DSH has no per-child tool allowlist, so the prompt states the policy as a hard rule.

@@ -20,6 +20,7 @@ import { createResearchSkillProvider, createRoleTool, ROLES } from './lib/resour
 import { createSearchContentTool, createCodeSearchTool, storedWebResults } from './lib/web-results.js'
 import { createFetchContentTool } from './lib/fetch-content.js'
 import { createSourceCheckTool } from './lib/source-check.js'
+import { createWebSearchTool } from './lib/web-search.js'
 import { describeScaffold, scaffoldProject } from './lib/init-scaffold.js'
 import { createContentStore } from './lib/content-store.js'
 import { alphaCommand } from './lib/alpha-command.js'
@@ -443,6 +444,7 @@ export function apply(ctx, config = {}) {
     scope.tools.register(createFetchContentTool(scope.tools, { store: state.content }))
     scope.tools.register(createSearchContentTool({ store: state.content }))
     scope.tools.register(createSourceCheckTool(scope.tools, { store: state.content }))
+    scope.tools.register(createWebSearchTool({ getWeb: () => service(ctx, 'web'), store: state.content }))
     scope.tools.register(createWorkflowTool(() => liveRefs(state)))
     if (!scope.tools.schemas?.().some((tool) => tool.name === 'code_search')) scope.tools.register(createCodeSearchTool(scope.tools))
   })
@@ -472,7 +474,7 @@ export function apply(ctx, config = {}) {
       status: (inv, context) => statusHandler(inv, context, state),
       tools: () => {
         if (!state.toolRuntime) return err('The tools service is not mounted.')
-        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content }), createSourceCheckTool(undefined, { store: state.content })]
+        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content }), createSourceCheckTool(undefined, { store: state.content }), createWebSearchTool({ getWeb: () => service(ctx, 'web'), store: state.content })]
         return { kind: 'success', text: tools.map((tool) => `${tool.name}: ${tool.description.split('\n')[0]}\n  Parameters: ${Object.keys(tool.parameters?.properties ?? {}).join(', ') || '(none)'}`).join('\n') || 'No tools are registered.' }
       },
       subagents: () => ({ kind: 'success', text: Object.entries(ROLES).map(([role, spec]) => `${role}: ${spec.description}`).join('\n') }),
@@ -495,7 +497,7 @@ export function apply(ctx, config = {}) {
       },
       websearch: (inv) => {
         if (!inv.rawInput.trim()) return err('Usage: /feynman websearch <query>')
-        return followupHandler(inv, `Run web_search with the user's queries. Show source URLs and snippets; ${state.curator.has(inv.agent.session.id) ? 'wait for source selection before fetching or synthesis' : 'fetch and inspect the most relevant primary sources, then summarize with citations'}. Save findings and search provenance under outputs/.notes/.`, 'Web research queued as the next turn.')
+        return followupHandler(inv, `Run a web search with the user's queries. Prefer feynman_web_search when the search needs a recency window, domain include/exclude, more than five results, or page content; use host web_search for a plain lookup. Show source URLs and snippets; ${state.curator.has(inv.agent.session.id) ? 'wait for source selection before fetching or synthesis' : 'fetch and inspect the most relevant primary sources, then summarize with citations'}. Save findings and search provenance under outputs/.notes/.`, 'Web research queued as the next turn.')
       },
       curator: (inv) => {
         const mode = inv.rawInput.trim().toLowerCase()

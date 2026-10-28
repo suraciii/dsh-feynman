@@ -619,7 +619,7 @@ test('every workflow brief is byte-identical to the reviewed text', () => {
   digest.update(loopFollowupPrompt('paper X', 2, 2))
   assert.equal(
     digest.digest('hex'),
-    '84bb3ef1278a871f762c40a3362c87f83558ee5a39a97041a0c5a6adfa8d0308',
+    '368422305871b8970b889b640627a9afecf4b0d997c7f40849b0d87028e2a278',
     'prompt text changed: update the digest deliberately',
   )
 })
