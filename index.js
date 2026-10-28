@@ -1,9 +1,9 @@
 /**
  * Research workflow commands for DeepSeek Harness.
  *
- * One `/feynman` command: 11 workflow subcommands (deepresearch, lit, review,
+ * One `/feynman` command: 12 workflow subcommands (deepresearch, lit, review,
  * review-loop, audit, replicate, recipe, compare, draft, autoresearch,
- * summarize) that steer the model with workflow briefs, plus session
+ * summarize, log) that steer the model with workflow briefs, plus session
  * subcommands for project state, research tools/roles, AlphaXiv, web results,
  * and source selection.
  *
@@ -16,6 +16,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import { mountResearchTools } from './lib/research-tools.js'
 import { createResearchSkillProvider, createRoleTool, ROLES } from './lib/resources.js'
 import { createSearchContentTool, createCodeSearchTool, storedWebResults } from './lib/web-results.js'
+import { createFetchContentTool } from './lib/fetch-content.js'
+import { createContentStore } from './lib/content-store.js'
 import { alphaCommand } from './lib/alpha-command.js'
 import { createWorkflowTool } from './lib/workflow-tool.js'
 
@@ -98,6 +100,8 @@ function createState(rawConfig) {
     }),
     loops: new Map(),
     curator: new Set(),
+    // Fetched document text shared by feynman_fetch_content and feynman_search_content.
+    content: createContentStore(),
   }
 }
 
@@ -231,7 +235,7 @@ function researchHandler(invocation, ctx, sessionHandlers, state) {
 }
 
 /** Session subcommands whose handler sends the invocation's attachments to the model. */
-const MESSAGE_SESSION_COMMANDS = new Set(['log', 'init', 'outputs', 'btw', 'run', 'websearch'])
+const MESSAGE_SESSION_COMMANDS = new Set(['init', 'outputs', 'btw', 'run', 'websearch'])
 
 /** Whether `/feynman <name> <rest>` carries its attachments into a queued message. */
 function queuesMessage(name, rest) {
@@ -243,7 +247,8 @@ function workflowHandler(kind, invocation, state) {
   const spec = WORKFLOWS[kind]
   const args = invocation.rawInput.trim()
   const usage = `Usage: /feynman ${kind} ${spec.hint}`
-  if (!args) return err(usage)
+  // `/log` is the one workflow whose upstream form takes no argument.
+  if (!args && kind !== 'log') return err(usage)
   if (kind === 'review-loop' && args.toLowerCase() === 'stop') {
     const loop = state.loops.get(invocation.agent.session.id)
     if (!loop) return { kind: 'success', text: 'No review loop is running.' }
@@ -298,12 +303,6 @@ function userMessage(invocation, text) {
     // Producer source, not forged 'user': title/outline/activity consumers gate human input on kind === 'user'.
     source: { kind: 'feynman', form: 'relay' },
   })
-}
-
-function logHandler(invocation) {
-  return followupHandler(invocation,
-    'Write a durable session log under notes/: completed work, findings, open questions, decisions, verification state, artifact paths, and next steps. Use a dated name and preserve existing logs.',
-    'Session-log request queued as the next turn.')
 }
 
 async function doctorHandler(invocation, ctx, state) {
@@ -391,14 +390,15 @@ export function apply(ctx, config = {}) {
     state.toolRuntime = scope.tools
     state.research = mountResearchTools(scope, () => liveRefs(state))
     scope.tools.register(createRoleTool())
-    scope.tools.register(createSearchContentTool())
+    scope.tools.register(createFetchContentTool(scope.tools, { store: state.content }))
+    scope.tools.register(createSearchContentTool({ store: state.content }))
     scope.tools.register(createWorkflowTool(() => liveRefs(state)))
     if (!scope.tools.schemas?.().some((tool) => tool.name === 'code_search')) scope.tools.register(createCodeSearchTool(scope.tools))
   })
   ctx.inject?.(['skills'], (scope) => scope.skills.registerProvider(createResearchSkillProvider))
   ctx.inject?.(['systemPrompt'], (scope) => scope.systemPrompt.section({
     name: 'feynman-research', order: 700, interpolate: false,
-    text: () => `Research date (UTC): ${new Date().toISOString().slice(0, 10)}. Prefer primary evidence; distinguish source assertions, inferences, and verified checks. Research tools: feynman_science_database_search, Hugging Face inspection, document_parse/search/screenshot, authenticated alpha tools when visible. Load feynman_research_role before role-specific delegation; use DSH's actual subagent schema and consume completed results before synthesis. Never invent measurements or citations; keep numeric claims and visuals tied to raw evidence. Write final research artifacts and provenance to disk and check they exist before delivery. Read existing CHANGELOG.md before resuming substantial work; append meaningful progress and blockers, not trivial one-shot changes.`,
+    text: () => `Research date (UTC): ${new Date().toISOString().slice(0, 10)}. Prefer primary evidence; distinguish source assertions, inferences, and verified checks. Research tools: feynman_fetch_content for PDFs, GitHub repositories/issues, and multi-URL batches; feynman_search_content to page (offset/limit) or search (findText) a long fetched source; feynman_science_database_search, Hugging Face inspection, document_parse/search/screenshot, authenticated alpha tools when visible. Load feynman_research_role before role-specific delegation; use DSH's actual subagent schema and consume completed results before synthesis. Never invent measurements or citations; keep numeric claims and visuals tied to raw evidence. Write final research artifacts and provenance to disk and check they exist before delivery. Read existing CHANGELOG.md before resuming substantial work; append meaningful progress and blockers, not trivial one-shot changes.`,
   }))
   ctx.effect(() => () => { state.disposed = true; state.loginProcess?.kill() })
   ctx.on('tools/post-execute', async (exec, result, next) => {
@@ -414,14 +414,14 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => {
     const disposers = []
     const sessionHandlers = {
-      log: logHandler, help: helpHandler,
+      help: helpHandler,
       init: initHandler, outputs: outputsHandler, btw: btwHandler, thinking: thinkingHandler,
       keys: (inv, context) => keysHandler(inv, context, state),
       doctor: (inv, context) => doctorHandler(inv, context, state),
       status: (inv, context) => statusHandler(inv, context, state),
       tools: () => {
         if (!state.toolRuntime) return err('The tools service is not mounted.')
-        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createSearchContentTool()]
+        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content })]
         return { kind: 'success', text: tools.map((tool) => `${tool.name}: ${tool.description.split('\n')[0]}\n  Parameters: ${Object.keys(tool.parameters?.properties ?? {}).join(', ') || '(none)'}`).join('\n') || 'No tools are registered.' }
       },
       subagents: () => ({ kind: 'success', text: Object.entries(ROLES).map(([role, spec]) => `${role}: ${spec.description}`).join('\n') }),

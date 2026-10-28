@@ -2,7 +2,7 @@
 
 Research workflows and tools for DeepSeek Harness, adapted from [Feynman v0.5.41](https://github.com/Companion-Inc/feynman/tree/17dfe0f87defa754ea915e834e9f401d292ae3d2). `/feynman deepresearch "mechanistic interpretability"` queues the investigation as the agent's next turn and produces a cited research document with provenance.
 
-The plugin supplies 11 workflows, 16 session commands, 16 research skills, and four research roles. It also mounts actual literature clients, Hugging Face inspection, document parsing/search/screenshots, and authenticated AlphaXiv tools. Workflows are model instructions; retrieval and document tools are executable implementations.
+The plugin supplies 12 workflows, 15 session commands, 16 research skills, and four research roles. It also mounts actual literature clients, Hugging Face inspection, document parsing/search/screenshots, and authenticated AlphaXiv tools. Workflows are model instructions; retrieval and document tools are executable implementations.
 
 ## Install
 
@@ -35,6 +35,7 @@ Stopping a review loop removes its queued round prompt. An already running turn 
 | `draft <topic \| --from-session>` | Paper-style draft under `papers/`; unsupported results remain gaps or TODOs. |
 | `autoresearch <idea>` | Bounded hypothesis → experiment → analysis → decision loop, with benchmark checks and durable experiment records. |
 | `summarize <source> [flags]` | Single-source summary of a paper, report, repository README, local file or PDF, with bounded reading and coverage notes. |
+| `log [focus]` | Durable session log under `notes/`: completed work, findings, open questions, artifact paths, next steps. Also loadable through `feynman_workflow` so an agent can write it without the slash command. |
 
 Prefix every command with `/feynman`.
 
@@ -53,7 +54,11 @@ Summarize controls count decoded characters: `--window-size` (6000), `--overlap`
 
 `document_parse`, `document_search`, and `document_screenshot` use the same LiteParse 2.10.1 version upstream's pi-docparser 4.0.0 pins. Native work runs in isolated, cancellable subprocesses with bounded outputs. Screenshots are delivered through DSH's attachments service when mounted and retain saved-file references. Document and custom OCR-data paths must resolve inside the session's effective workspace, including symlink targets. Office conversion/OCR can need LibreOffice/Tesseract; missing dependencies are reported. DOCX paragraph extraction is available without LibreOffice, with layout/table/footnote/image gaps stated explicitly.
 
-`code_search` uses an existing host code-search tool when mounted; otherwise the plugin bridges to host web search for public repository/docs examples. `feynman_search_content` reads bounded stored web results from this session. `feynman_workflow` lets an agent load and perform a workflow without a human slash command.
+`code_search` uses an existing host code-search tool when mounted; otherwise the plugin bridges to host web search for public repository/docs examples.
+
+`feynman_fetch_content` fetches remote sources as readable text. HTML goes through the host `web_fetch` reader when mounted and falls back to a direct status-checked request; `.pdf` URLs are saved into `.feynman/fetch/` and parsed with `document_parse`, returning the full parsed text rather than the parser's preview; GitHub repositories, issues, pull requests, blobs and trees resolve through the public API/raw endpoints. Up to six URLs per call. Failures are reported per URL instead of aborting the batch.
+
+`feynman_search_content` reads content already stored in this session or by `feynman_fetch_content`: `offset`/`limit` page through a long document, `findText` locates passages (literal by default, `findMode: "regex"` for a pattern) with surrounding context. `feynman_workflow` lets an agent load and perform a workflow without a human slash command.
 
 `feynman_research_role` provides the upstream researcher, writer, verifier and reviewer protocols. `/feynman subagents` lists them; `/feynman run <role> <task>` queues the role task. These are research roles applied through DSH's actual subagent interface, not Pi model aliases or workflow scripts. Missing delegation falls back to lead-owned work. Sixteen prefixed `feynman-*` skills cover literature, critique, replication, recipes, comparison, writing, experiments, paper access, PDF exploration, plain-language explanation, preview and continuity.
 
@@ -76,9 +81,9 @@ The bundled Alpha Hub client handles OAuth and refresh. Login displays its conse
 
 ## Session commands
 
-`log`, `help`, `init`, `outputs`, `btw`, `thinking`, `keys`, `doctor`, `status`, `tools`, `subagents`, `run`, `alpha`, `search`, `websearch`, `curator`.
+`help`, `init`, `outputs`, `btw`, `thinking`, `keys`, `doctor`, `status`, `tools`, `subagents`, `run`, `alpha`, `search`, `websearch`, `curator`. `log` is a workflow (above) so that agents can load it through `feynman_workflow`.
 
-`/feynman search [query]` browses **stored web results in the current session**. `/feynman websearch <query>` queues live web research. `/feynman curator on` asks the model to show retrieved URLs/snippets and wait for source selection before fetching or synthesis; `off` disables it. Curator state is session-local and ends with disposal/restart.
+`/feynman search [query]` browses **stored web and fetched-source results in the current session**. `/feynman websearch <query>` queues live web research. `/feynman curator on` asks the model to show retrieved URLs/snippets and wait for source selection before fetching or synthesis; `off` disables it. Curator state is session-local and ends with disposal/restart.
 
 `outputs` browses `outputs/`, `papers/`, `experiments/` and `notes/`, including older research artifacts. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` bootstraps research directories and preserves existing project instructions. `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` records a reasoning preference without pretending to change provider configuration.
 

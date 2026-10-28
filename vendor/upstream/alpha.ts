@@ -41,7 +41,7 @@ async function withPaperFallback<T>(
 			} catch {}
 		}
 		throw new Error(
-			`${message}\nalphaXiv did not answer this call. Use feynman_science_database_search (source "arxiv" or "semanticscholar") or fetch_content on https://arxiv.org/abs/<id> instead.`,
+			`${message}\nalphaXiv did not answer this call. Use feynman_science_database_search (source "arxiv" or "semanticscholar") or feynman_fetch_content on https://arxiv.org/abs/<id> instead.`,
 		);
 	}
 }
@@ -128,7 +128,7 @@ export function registerAlphaTools(pi: ExtensionAPI, signedIn = isLoggedIn()): v
 	registerAccountTool({
 		name: "alpha_ask_paper",
 		label: "Alpha Ask Paper",
-		description: "Ask a targeted question about an arXiv or alphaXiv paper. Uses AI to analyze the PDF and answer. DOI-only papers are not supported; read those with fetch_content on the open-access PDF or Europe PMC full text.",
+		description: "Ask a targeted question about an arXiv or alphaXiv paper. Uses AI to analyze the PDF and answer. DOI-only papers are not supported; read those with feynman_fetch_content on the open-access PDF or Europe PMC full text.",
 		parameters: Type.Object({
 			paper: Type.String({ description: "arXiv ID, arXiv URL, or alphaXiv URL." }),
 			question: Type.String({ description: "Question about the paper." }),
@@ -136,7 +136,7 @@ export function registerAlphaTools(pi: ExtensionAPI, signedIn = isLoggedIn()): v
 		async execute(_toolCallId, params) {
 			const arxivId = ARXIV_ID.exec(params.paper.trim())?.[1];
 			const result = await withPaperFallback(() => askPaper(params.paper, params.question), arxivId ? {
-				source: "arXiv metadata and abstract; the question was not answered, so answer it from the abstract or read the full text with fetch_content on the arXiv PDF",
+				source: "arXiv metadata and abstract; the question was not answered, so answer it from the abstract or read the full text with feynman_fetch_content on the arXiv PDF",
 				run: () => searchArxiv({ query: arxivId }),
 			} : undefined);
 			return { content: [{ type: "text", text: formatText(result) }], details: result };

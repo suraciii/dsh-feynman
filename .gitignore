@@ -3,3 +3,6 @@ node_modules/
 .DS_Store
 outputs/
 .scratch/
+
+# Runtime fetch cache (feynman_fetch_content saves source text here).
+.feynman/

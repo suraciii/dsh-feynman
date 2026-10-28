@@ -11,12 +11,14 @@ test('all Feynman workflow commands mapped', () => {
     assert.ok(WORKFLOWS[cmd].prompt('x').length > 100, `/${cmd} prompt is a stub`)
   }
   assert.ok(WORKFLOWS['review-loop'], 'missing /review-loop')
+  assert.ok(WORKFLOWS.log.prompt('').length > 100, 'log prompt is a stub and needs no argument')
+  assert.match(WORKFLOWS.log.prompt('citation fixes'), /Focus this entry on: citation fixes/)
   assert.ok(WORKFLOWS.summarize.prompt(parseSummarizeArgs('paper.pdf')).length > 100, 'summarize prompt is a stub')
 })
 
 // Every Feynman session/utility command is mapped.
 test('all session commands mapped', () => {
-  for (const cmd of ['log', 'help', 'init', 'outputs', 'btw', 'thinking', 'keys', 'doctor', 'status']) {
+  for (const cmd of ['help', 'init', 'outputs', 'btw', 'thinking', 'keys', 'doctor', 'status']) {
     assert.ok(SESSION_COMMANDS[cmd], `missing /${cmd}`)
   }
   assert.ok(THINKING_LEVELS.includes('max') && THINKING_LEVELS.includes('off'))
@@ -559,6 +561,7 @@ const DIGEST_ARGS = {
   compare: 'arxiv:1 arxiv:2',
   draft: '--from-session',
   autoresearch: 'prompt optimisation',
+  log: 'citation fixes for the audit brief',
   summarize: parseSummarizeArgs('papers/long report.pdf --window-size 4000 --overlap 100 --tier1-threshold 5000 --tier2-threshold 20000'),
 }
 
@@ -572,7 +575,7 @@ test('every workflow brief is byte-identical to the reviewed text', () => {
   digest.update(loopFollowupPrompt('paper X', 2, 2))
   assert.equal(
     digest.digest('hex'),
-    '5ee79a9916d71acd0618e8a6f7ce9706f1327698d1b7127723156569a0f60ff9',
+    '2809c3aa1b034903a7510793cf5942d9669edb8a7439cd4317618545f5c64ddf',
     'prompt text changed: update the digest deliberately',
   )
 })
@@ -645,4 +648,22 @@ test('workflow and side-question relays preserve multiline input and code indent
     assert.equal(result.kind, 'success')
     assert.ok(messages.at(-1).content[0].text.includes(prompt), `${verb} must retain the literal prompt`)
   }
+})
+
+// The upstream `/log` takes no argument; it must still queue the full brief.
+test('/feynman log queues the upstream session-log brief with and without a focus', async () => {
+  let handler
+  const queued = []
+  const agent = { session: { id: 'log-session' }, followup: (message) => queued.push(message), inject: () => {} }
+  apply({ effect: (fn) => fn(), commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined }, {})
+  const bare = await handler({ rawInput: 'log', agent, attachments: [] })
+  assert.equal(bare.kind, 'success')
+  assert.match(queued.at(-1).content.at(-1).text, /Write a session log for the current research work/)
+  assert.doesNotMatch(queued.at(-1).content.at(-1).text, /Focus:/)
+  const focused = await handler({ rawInput: 'log citation fixes', agent, attachments: [] })
+  assert.equal(focused.kind, 'success')
+  assert.match(queued.at(-1).content.at(-1).text, /Focus this entry on: citation fixes/)
+  const attached = await handler({ rawInput: 'log', agent, attachments: [{ type: 'text', text: 'keep me' }] })
+  assert.equal(attached.kind, 'success', 'log carries attachments into its queued message')
+  assert.equal(queued.at(-1).content.length, 2)
 })

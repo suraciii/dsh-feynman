@@ -36,6 +36,20 @@ function cleanQuery(query: string): string {
 const arxivPacer = createRequestPacer();
 export const ARXIV_MIN_GAP_MS = 3000;
 
+// The query held no arXiv ID; the caller searches another index for `topic`.
+export class ArxivTopicQueryError extends Error {
+	constructor(message: string, readonly topic: string) {
+		super(message);
+	}
+}
+
+// arXiv timed out or answered 429/5xx; the caller can look `ids` up elsewhere.
+export class ArxivUnavailableError extends Error {
+	constructor(message: string, readonly ids: string[]) {
+		super(message);
+	}
+}
+
 async function fetchText(url: URL, accept: string): Promise<string> {
 	for (let attempt = 0; ; attempt += 1) {
 		const result = await arxivPacer(ARXIV_MIN_GAP_MS, async () => {
@@ -146,6 +160,19 @@ function arxivFeedEntries(feed: Record<string, unknown>): Record<string, unknown
 	return entries;
 }
 
+// Plain search words from a query written in arXiv's API syntax
+// (search_query=all:..., AND submittedDate:[...], &max_results=...).
+export function arxivTopicText(query: string): string {
+	return query
+		.replace(/&?\b(?:max_results|start|sortBy|sortOrder)=[^&\s]*/gi, " ")
+		.replace(/\b(?:AND|OR|ANDNOT)\s+submittedDate:\[[^\]]*\]/gi, " ")
+		.replace(/\bsearch_query[=_:]+/gi, " ")
+		.replace(/\b(?:all|ti|abs|au|cat|co|jr):/gi, " ")
+		.replace(/[&"()]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 async function getArxivPapers(query: string): Promise<Record<string, unknown>> {
 	const parsed = parseToolKeyValueQuery(stripGetPapersCommand(query));
 	const requested = (parsed.flags.ids ?? parsed.text).split(/[,\s]+/).map((id) => id.trim()).filter(Boolean).slice(0, MAX_ARXIV_EXACT_RESULTS);
@@ -158,13 +185,25 @@ async function getArxivPapers(query: string): Promise<Record<string, unknown>> {
 		else notFound.push(raw);
 	}
 	if (!ids.length) {
-		throw new Error(`No arXiv IDs found in "${query}". The arxiv source only looks up papers by ID; search topics with source semanticscholar or openalex.`);
+		throw new ArxivTopicQueryError(
+			`No arXiv IDs found in "${query}". The arxiv source only looks up papers by ID; search topics with source semanticscholar or openalex.`,
+			arxivTopicText(parsed.text || stripGetPapersCommand(query)),
+		);
 	}
 	const rows: Record<string, unknown>[] = [];
 	const duplicates: Array<Record<string, unknown>> = [];
 	const url = new URL(ARXIV_QUERY_URL);
 	url.search = new URLSearchParams({ id_list: ids.join(","), max_results: String(ids.length) }).toString();
-	const xml = await fetchText(url, "application/atom+xml, application/xml;q=0.9, text/xml;q=0.8");
+	let xml: string;
+	try {
+		xml = await fetchText(url, "application/atom+xml, application/xml;q=0.9, text/xml;q=0.8");
+	} catch (error) {
+		const reason = error instanceof Error && error.name === "AbortError" ? `no answer within ${REQUEST_TIMEOUT_MS / 1000} s` : error instanceof Error ? error.message : String(error);
+		if (error instanceof Error && (error.name === "AbortError" || /request failed: (?:429|5\d\d)\b/.test(error.message))) {
+			throw new ArxivUnavailableError(reason, ids);
+		}
+		throw error;
+	}
 	const feed = recordValue(xmlParser.parse(xml).feed);
 	const byId = new Map<string, Record<string, unknown>>();
 	for (const row of arxivFeedEntries(feed).map(parseArxivEntry).filter((item): item is Record<string, unknown> => Boolean(item))) {

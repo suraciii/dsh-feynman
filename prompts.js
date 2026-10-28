@@ -37,7 +37,7 @@ export function parseLoopArgs(rawInput) {
   return { target: rawInput.trim(), rounds: DEFAULT_LOOP_ROUNDS }
 }
 
-const TOOL_PRELUDE = `You are a research agent. Use the tools visible in this session: feynman_science_database_search for literature, hf_dataset_info/hf_repo_files/hf_repo_read_file for Hub inspection, document_parse/document_search/document_screenshot for local documents, authenticated alpha_* tools for AlphaXiv, and web_search/web_fetch plus read/grep/glob/bash for web and workspace evidence. Load feynman_research_role before role-specific delegation, then pass its rules with the task through the actual DSH subagent schema; named Pi agent/workflow parameters are not assumed. Route ML/CS discovery to Semantic Scholar (api.semanticscholar.org/graph/v1) and OpenAlex (api.openalex.org); use citation-sorted and recent/relevance searches with 2-4 reworded queries rather than trusting one ranking. Resolve titles and author names through search before ID lookups. Use arXiv (export.arxiv.org API, arxiv.org/abs or /html) for known IDs, preserving explicit versions; PubMed and Europe PMC for biomedical literature and OA sections; bioRxiv/medRxiv for preprints; Crossref for DOI metadata; Hugging Face Hub (huggingface.co/api, read-only) for datasets/models/files. On a timeout, outage, or rate limit, try the other discovery index and record which source answered and why; do not substitute discovery results for failed exact ID/citation lookups. Pace arXiv requests at least 3 seconds apart and anonymous Crossref requests more than 1 second apart; serialize OpenAlex semantic searches at 1 per second. Honor Retry-After for one bounded retry; report persistent blocks instead of retrying indefinitely.
+const TOOL_PRELUDE = `You are a research agent. Use the tools visible in this session: feynman_science_database_search for literature, hf_dataset_info/hf_repo_files/hf_repo_read_file for Hub inspection, document_parse/document_search/document_screenshot for local documents, authenticated alpha_* tools for AlphaXiv, and web_search/web_fetch plus feynman_fetch_content for PDFs, GitHub repositories/issues/PRs, and multi-URL batches, with feynman_search_content paging (offset/limit) or searching (findText) long sources, plus read/grep/glob/bash for workspace evidence. Load feynman_research_role before role-specific delegation, then pass its rules with the task through the actual DSH subagent schema; named Pi agent/workflow parameters are not assumed. Route ML/CS discovery to Semantic Scholar (api.semanticscholar.org/graph/v1) and OpenAlex (api.openalex.org); use citation-sorted and recent/relevance searches with 2-4 reworded queries rather than trusting one ranking. Resolve titles and author names through search before ID lookups. Use arXiv (export.arxiv.org API, arxiv.org/abs or /html) for known IDs, preserving explicit versions; PubMed and Europe PMC for biomedical literature and OA sections; bioRxiv/medRxiv for preprints; Crossref for DOI metadata; Hugging Face Hub (huggingface.co/api, read-only) for datasets/models/files. On a timeout, outage, or rate limit, try the other discovery index and record which source answered and why; do not substitute discovery results for failed exact ID/citation lookups. Pace arXiv requests at least 3 seconds apart and anonymous Crossref requests more than 1 second apart; serialize OpenAlex semantic searches at 1 per second. Honor Retry-After for one bounded retry; report persistent blocks instead of retrying indefinitely.
 For multi-source research, cross-check each cited paper's DOI/arXiv ID in two independent indexes (arXiv/Crossref plus OpenAlex/Semantic Scholar), matching title, year, and author; record preprint/venue differences and blocked checks. Keep numerical claims tied to source locations or raw artifact/script paths. Read before summarizing; distinguish metadata/abstract-only evidence from full-text checks. Use python3 on macOS/Linux after checking availability.
 Delegate only when decomposition helps and the subagent tool is visible, using its actual schema: researcher gathers, verifier checks citations, reviewer critiques, writer drafts. Keep narrow explainers lead-owned. Use file-based briefs and outputs, returning paths plus short status; consume completion results and verify every expected child file before synthesis. A launch receipt is not completion. Record failed/missing tasks in the plan; run citation verification before dependent review. Keep plans current and verify final artifacts exist before delivery; if retrieval or parsing fails, still write a partial/blocked output with explicit coverage gaps.`
 const KEY_PRELUDE = (hfTokenEnv, alphaxivTokenEnv) => `Credentials: the Hugging Face key ref is ${hfTokenEnv} (HUGGINGFACE_HUB_TOKEN is an alternative when exported), and the AlphaXiv key ref is ${alphaxivTokenEnv}; /feynman keys reports their state without revealing values. Use credentials only through a supported credential-aware tool or secure request mechanism; never print keys or put literals in prompts, artifacts, or logged shell commands. Upstream AlphaXiv now uses authenticated Alpha Hub OAuth/MCP tools. Use AlphaXiv only when authenticated tools or a currently documented endpoint are available; a stored key alone does not establish that access. If missing or rejected, continue via arXiv, Semantic Scholar, OpenAlex, or Europe PMC, recording the fallback and any AlphaXiv-only checks blocked. OPENALEX_API_KEY and SEMANTIC_SCHOLAR_API_KEY, when already exported, can avoid shared rate limits through supported secure requests; anonymous access may be limited. Treat gated Hugging Face access as blocked without usable credentials. Never bypass paywalls or invent unreachable source content.`
@@ -69,6 +69,13 @@ const RECIPE_PROMPT = upstreamPrompt('recipe')
 const COMPARE_PROMPT = upstreamPrompt('compare')
 const DRAFT_PROMPT = upstreamPrompt('draft')
 const AUTORESEARCH_PROMPT = upstreamPrompt('autoresearch')
+const LOG_BRIEF = upstreamPrompt('log')('')
+
+/** Upstream `/log` takes no required argument; a focus phrase is appended when given. */
+const LOG_PROMPT = (rawInput = '') => {
+  const focus = rawInput.trim()
+  return focus ? `${LOG_BRIEF}\nFocus this entry on: ${focus}` : LOG_BRIEF
+}
 
 /** Parse summarize's character-window controls; reject invalid values before queuing work. */
 export function parseSummarizeArgs(rawInput) {
@@ -163,6 +170,11 @@ export const WORKFLOWS = {
     hint: '<idea>',
     prompt: AUTORESEARCH_PROMPT,
   },
+  log: {
+    description: 'Write a durable session log: completed work, findings, open questions, next steps',
+    hint: '[focus]',
+    prompt: LOG_PROMPT,
+  },
   summarize: {
     description: 'Single-source summary with bounded character windows and durable coverage notes',
     hint: '<source> [--window-size N] [--overlap N] [--tier1-threshold N] [--tier2-threshold N]',
@@ -172,7 +184,6 @@ export const WORKFLOWS = {
 
 /** Session/utility subcommands of /feynman (handlers live in index.js). */
 export const SESSION_COMMANDS = {
-  log: 'Write a durable session log: completed work, findings, open questions, next steps',
   help: 'Show grouped research commands',
   init: 'Bootstrap AGENTS.md and session-log folders for a research project',
   outputs: 'Browse research artifacts in outputs, papers, experiments, and notes',
@@ -185,7 +196,7 @@ export const SESSION_COMMANDS = {
   subagents: 'Show the four research roles available for delegation',
   run: 'Queue one researcher, writer, verifier, or reviewer task',
   alpha: 'AlphaXiv OAuth login/status/logout, paper search/access/Q&A/code, and annotations',
-  search: 'Browse stored web results in the current session',
+  search: 'Browse stored web/fetch results in the current session',
   websearch: 'Run and inspect a web search with source URLs and snippets',
   curator: 'Toggle source selection before fetching and synthesis',
 }

@@ -5,7 +5,7 @@ description: Render Markdown or LaTeX research artifacts to HTML or PDF with pan
 
 # Preview
 
-Render Markdown or LaTeX artifacts with pandoc through the shell. `/feynman doctor` checks for pandoc, and `/feynman doctor` reports whether it is available.
+Render Markdown or LaTeX artifacts with pandoc through the shell. `/feynman doctor` does not test pandoc: check `command -v pandoc` yourself and report a missing renderer instead of assuming it is installed.
 
 ```bash
 pandoc outputs/<slug>.md -s -o outputs/<slug>.html   # HTML

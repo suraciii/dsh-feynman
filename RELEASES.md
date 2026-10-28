@@ -1,3 +1,11 @@
+## Unreleased
+
+- Add `feynman_fetch_content`: PDFs are saved into `.feynman/fetch/` and parsed to full text, GitHub repositories/issues/pull requests/blobs/trees resolve through the public API, HTML uses the host `web_fetch` reader with a direct status-checked fallback, and up to six URLs are fetched per call with per-URL errors. Full text is kept under an id for later paging.
+- Add `offset`/`limit` paging and `findText` search (`findMode: "regex"`) to `feynman_search_content`, and let it read fetched documents as well as session web results.
+- Move `log` into the workflow catalog so `feynman_workflow` can load it; `/feynman log [focus]` keeps working and no longer references a missing workflow.
+- Backport the upstream arXiv fallbacks from v0.5.45/v0.5.46 (present in v0.5.58): a topic-shaped arXiv query falls back to OpenAlex semantic search, and an arXiv timeout/429/5xx falls back to Semantic Scholar records; an OpenAlex miss for an arXiv DOI is retried on arXiv.
+- Correct agent-facing text that described parameters DSH does not expose: role web filters, Pi `output` on subagents, `alpha_search` in shell, the pandoc claim in the preview skill, plain `rg` over compressed transcripts, and the broken deep-research verifier/reviewer steps and provenance filename.
+
 ## v0.24.0
 
 - Update DSH dependencies to 0.2.1-rc.2 and Cordis utilities to their matching stable releases.

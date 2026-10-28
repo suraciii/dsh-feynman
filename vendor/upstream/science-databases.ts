@@ -1,7 +1,7 @@
 import { researchFetch as fetch } from "../../lib/transport.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { searchArxiv } from "./science-database-arxiv.js";
+import { ArxivTopicQueryError, ArxivUnavailableError, searchArxiv } from "./science-database-arxiv.js";
 import { searchOpenAlex } from "./science-database-openalex.js";
 import { searchPreprints } from "./science-database-preprints.js";
 import { searchPubMed } from "./science-database-pubmed.js";
@@ -323,6 +323,29 @@ function semanticScholarSearchUrl(query: string, limit: number, sort: string, ye
 
 // Bulk search sorted by citation count surfaces seminal papers that relevance
 // ranking misses; it returns up to 1,000 rows, so only the top `limit` are kept.
+function semanticScholarRecord(item: unknown): Record<string, unknown>[] {
+	const record = recordValue(item);
+	const paperId = stringValue(record.paperId);
+	if (!paperId) return [];
+	const externalIds = recordValue(record.externalIds);
+	const doi = stringValue(externalIds.DOI);
+	return [{
+		paperId,
+		title: stringValue(record.title),
+		year: numberValue(record.year),
+		authors: arrayValue(record.authors).map((author) => stringValue(recordValue(author).name)).filter(Boolean).slice(0, 8),
+		venue: stringValue(record.venue),
+		citationCount: numberValue(record.citationCount),
+		doi,
+		arxivId: stringValue(externalIds.ArXiv),
+		pmid: stringValue(externalIds.PubMed),
+		openAccessPdf: stringValue(recordValue(record.openAccessPdf).url),
+		abstract: truncateText(stringValue(record.abstract), SEMANTIC_SCHOLAR_ABSTRACT_CHARS),
+		url: `https://www.semanticscholar.org/paper/${paperId}`,
+		...(doiUrl(doi) ? { doiUrl: doiUrl(doi) } : {}),
+	}];
+}
+
 async function searchSemanticScholar(params: ScienceDatabaseSearchParams): Promise<Record<string, unknown>> {
 	const { query, year } = parseSemanticScholarQuery(cleanQuery(params.query));
 	const limit = safeLimit(params.limit);
@@ -341,28 +364,7 @@ async function searchSemanticScholar(params: ScienceDatabaseSearchParams): Promi
 		note = `Relevance search was rate-limited (HTTP 429) on Semantic Scholar's shared anonymous pool, so these are citation-sorted bulk results. A free SEMANTIC_SCHOLAR_API_KEY avoids this: ${SEMANTIC_SCHOLAR_KEY_URL}`;
 		payload = recordValue(await fetchSemanticScholar(endpoints[1]!));
 	}
-	const results = arrayValue(payload.data).slice(0, limit).flatMap((item) => {
-		const record = recordValue(item);
-		const paperId = stringValue(record.paperId);
-		if (!paperId) return [];
-		const externalIds = recordValue(record.externalIds);
-		const doi = stringValue(externalIds.DOI);
-		return [{
-			paperId,
-			title: stringValue(record.title),
-			year: numberValue(record.year),
-			authors: arrayValue(record.authors).map((author) => stringValue(recordValue(author).name)).filter(Boolean).slice(0, 8),
-			venue: stringValue(record.venue),
-			citationCount: numberValue(record.citationCount),
-			doi,
-			arxivId: stringValue(externalIds.ArXiv),
-			pmid: stringValue(externalIds.PubMed),
-			openAccessPdf: stringValue(recordValue(record.openAccessPdf).url),
-			abstract: truncateText(stringValue(record.abstract), SEMANTIC_SCHOLAR_ABSTRACT_CHARS),
-			url: `https://www.semanticscholar.org/paper/${paperId}`,
-			...(doiUrl(doi) ? { doiUrl: doiUrl(doi) } : {}),
-		}];
-	});
+	const results = arrayValue(payload.data).slice(0, limit).flatMap(semanticScholarRecord);
 	return {
 		schema: "feynman.scienceDatabaseSearch.v1",
 		source: "semanticscholar",
@@ -419,8 +421,65 @@ async function withIndexFallback(
 	}
 }
 
+// arXiv IDs looked up on Semantic Scholar, one request per ID (at most 10).
+async function semanticScholarByArxivIds(ids: string[]): Promise<Record<string, unknown>> {
+	const endpoints: string[] = [];
+	const results: Record<string, unknown>[] = [];
+	const notFound: string[] = [];
+	for (const id of ids.slice(0, 10)) {
+		const bare = id.replace(/v\d+$/, "");
+		const url = new URL(`${SEMANTIC_SCHOLAR_BASE}/paper/ARXIV:${bare}`);
+		url.searchParams.set("fields", SEMANTIC_SCHOLAR_FIELDS);
+		endpoints.push(url.toString());
+		try {
+			results.push(...semanticScholarRecord(await fetchSemanticScholar(url)));
+		} catch (error) {
+			if (!(error instanceof ScienceDatabaseRequestError) || error.status !== 404) throw error;
+			notFound.push(id);
+		}
+	}
+	return { schema: "feynman.scienceDatabaseSearch.v1", source: "semanticscholar", query: ids.join(","), not_found: notFound, results, provenance: { endpoints } };
+}
+
+async function searchArxivWithFallback(params: ScienceDatabaseSearchParams): Promise<Record<string, unknown>> {
+	try {
+		return await searchArxiv(params);
+	} catch (error) {
+		if (error instanceof ArxivTopicQueryError) {
+			const result = await searchOpenAlex({ limit: params.limit, query: `semantic: ${error.topic}`, source: "openalex" });
+			return { fallbackNote: "The arxiv source only looks up papers by ID, so this topic was searched with OpenAlex semantic search instead.", ...result };
+		}
+		if (error instanceof ArxivUnavailableError) {
+			let result: Record<string, unknown>;
+			try {
+				result = await semanticScholarByArxivIds(error.ids);
+			} catch {
+				throw error;
+			}
+			return { fallbackNote: `arXiv was unavailable (${error.message}); these records are from Semantic Scholar.`, ...result };
+		}
+		throw error;
+	}
+}
+
+// OpenAlex indexes new arXiv preprints days late; arXiv itself answers for its
+// own DOIs (10.48550/arXiv.<id>).
+async function withArxivDoiFallback(
+	params: ScienceDatabaseSearchParams,
+	run: () => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+	try {
+		return await run();
+	} catch (error) {
+		const arxivId = error instanceof Error ? /^OpenAlex has no work for doi:10\.48550\/arxiv\.(.+)$/i.exec(error.message)?.[1] : undefined;
+		if (!arxivId) throw error;
+		const result = await searchArxivWithFallback({ ...params, source: "arxiv", query: arxivId });
+		return { fallbackNote: `OpenAlex has no record of this arXiv DOI yet, so it was looked up on arXiv (${arxivId}).`, ...result };
+	}
+}
+
 async function scienceDatabaseSearch(params: ScienceDatabaseSearchParams): Promise<Record<string, unknown>> {
-	if (params.source === "arxiv") return searchArxiv(params);
+	if (params.source === "arxiv") return searchArxivWithFallback(params);
 	if (params.source === "biorxiv") return searchPreprints(params, "biorxiv");
 	if (params.source === "medrxiv") return searchPreprints(params, "medrxiv");
 	if (params.source === "pubmed") return searchPubMed(params);
@@ -431,11 +490,11 @@ async function scienceDatabaseSearch(params: ScienceDatabaseSearchParams): Promi
 		return withIndexFallback(semanticScholar, openAlex, (reason) => `Semantic Scholar was unavailable (${reason}); these results are from OpenAlex.`);
 	}
 	if (params.source === "openalex") {
-		return withIndexFallback(
+		return withArxivDoiFallback(params, () => withIndexFallback(
 			openAlex,
 			OPENALEX_LOOKUP_QUERY.test(params.query.trim()) ? undefined : semanticScholar,
 			(reason) => `OpenAlex was unavailable (${reason}); these results are from Semantic Scholar.`,
-		);
+		));
 	}
 	return searchEuropePmc(params);
 }

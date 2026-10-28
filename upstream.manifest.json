@@ -67,5 +67,19 @@
       "tool.ts": "3ddb9450f17bf7f28f7f4aa916b2a9c1cc541630e083beffed40ddfc81bff4e2",
       "types.ts": "d47fb0a07677889fb72b7902b4784e93f39d2cb64d515df8f45f461bd87c3b34"
     }
+  },
+  "deviations": {
+    "extensions/research-tools/science-database-arxiv.ts": {
+      "upstreamVersion": "0.5.58",
+      "upstreamCommit": "87a45677eeba3f63954e1783df4223423fd761cf",
+      "upstreamSha256": "9f5efb8dbbc26de69827ae5d0673e5fce73719370ff47307392dcaac2c1bfa8a",
+      "localChange": "prepended researchFetch adapter import; no other edits"
+    },
+    "extensions/research-tools/science-databases.ts": {
+      "upstreamVersion": "0.5.58",
+      "upstreamCommit": "87a45677eeba3f63954e1783df4223423fd761cf",
+      "upstreamSha256": "5095e5916f76e84de9546e95741f7e73df4cd427eb8f0a13b36bb1b8cc3fc8fb",
+      "localChange": "prepended researchFetch adapter import; no other edits"
+    }
   }
 }

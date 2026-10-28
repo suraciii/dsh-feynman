@@ -229,6 +229,9 @@ test('model workflow loading supplies complete protocols and validates summarize
   assert.match(review.instructions, /Reproducibility and Verification/)
   await assert.rejects(tool.execute({ workflow: 'summarize', input: 'paper.pdf --overlap 7000' }, execution()), /window-size/)
   await assert.rejects(tool.execute({ workflow: 'review', input: '' }, execution()), /target/)
+  const log = await tool.execute({ workflow: 'log', input: '' }, execution())
+  assert.match(log.instructions, /Write a session log for the current research work/)
+  assert.match(log.instructions, /notes\/` as markdown with a date-oriented filename/)
 })
 
 test('research tools mount, execute, and unload through the real DSH tool runtime', async () => {
@@ -273,4 +276,95 @@ test('research-key commands store exact refs without echoing values or admitting
   }
   for (const input of ['keys set constructor value', 'keys set __proto__ value', 'constructor sample', '__proto__ sample']) assert.equal((await handler({ rawInput: input, agent, attachments: [] })).kind, 'error')
   assert.equal(written.length, 3)
+})
+
+test('fetch routing classifies papers, repositories, issues, and blobs', async () => {
+  const { classifyUrl } = await import('../lib/fetch-content.js')
+  assert.equal(classifyUrl('https://arxiv.org/pdf/2401.12345').kind, 'pdf')
+  assert.equal(classifyUrl('https://example.org/paper.PDF').kind, 'pdf')
+  assert.equal(classifyUrl('https://arxiv.org/abs/2401.12345').kind, 'web')
+  assert.equal(classifyUrl('https://example.com/blog').kind, 'web')
+  assert.deepEqual(
+    (({ kind, owner, repo }) => ({ kind, owner, repo }))(classifyUrl('https://github.com/Companion-Inc/feynman')),
+    { kind: 'github-repo', owner: 'Companion-Inc', repo: 'feynman' },
+  )
+  assert.equal(classifyUrl('https://github.com/o/r/issues/12').kind, 'github-issue')
+  assert.equal(classifyUrl('https://github.com/o/r/pull/12').kind, 'github-pull')
+  assert.equal(classifyUrl('https://github.com/o/r/blob/main/src/a.ts').path, 'src/a.ts')
+  assert.throws(() => classifyUrl('file:///etc/passwd'), /http/)
+})
+
+test('fetch reads GitHub sources, stores full text, and search_content pages and finds in it', async () => {
+  const original = globalThis.fetch
+  try {
+    const body = Array.from({ length: 40 }, (_, i) => `paragraph ${i} about scaling laws`).join('\n')
+    globalThis.fetch = async () => new Response(body, { headers: { 'content-type': 'text/markdown' } })
+    const { createFetchContentTool } = await import('../lib/fetch-content.js')
+    const { createContentStore } = await import('../lib/content-store.js')
+    const store = createContentStore()
+    const root = await mkdtemp(join(scratch, 'fetch-'))
+    try {
+      const tool = createFetchContentTool({ schemas: () => [], execute: async () => { throw new Error('host tools are not needed here') } }, { store })
+      const result = await tool.execute({ urls: ['https://github.com/o/r', 'https://github.com/o/r/issues/7'] }, execution(root))
+      assert.equal(result.ok, 1)
+      assert.equal(result.failed, 1, JSON.stringify(result.items))
+      assert.equal(result.items[0].kind, 'github-repo')
+      assert.match(result.items[0].text, /scaling laws/)
+      assert.ok(result.items[0].savedPath.startsWith(join(root, '.feynman', 'fetch')))
+      assert.equal(await readFile(result.items[0].savedPath, 'utf8'), body)
+
+      const search = createSearchContentTool({ store })
+      const page = await search.execute({ id: result.items[0].id, offset: 10, limit: 25 }, execution(root))
+      assert.equal(page.text, body.slice(10, 35))
+      assert.equal(page.totalChars, body.length)
+      assert.equal(page.nextOffset, 35)
+      await assert.rejects(search.execute({ id: result.items[0].id, findText: '([', findMode: 'regex' }, execution(root)), /not a valid regular expression/)
+      const found = await search.execute({ id: result.items[0].id, findText: 'PARAGRAPH 12' }, execution(root))
+      assert.equal(found.matchCount, 1)
+      assert.match(found.matches[0].context, /paragraph 12 about scaling laws/)
+      const latest = await search.execute({ limit: 20 }, execution(root))
+      assert.equal(latest.id, result.items[0].id)
+      assert.equal(latest.text, body.slice(0, 20))
+    } finally { await rm(root, { recursive: true, force: true }) }
+  } finally { globalThis.fetch = original }
+})
+
+test('fetch parses PDFs through document_parse and falls back to the host reader for HTML', async () => {
+  const original = globalThis.fetch
+  const parseDir = await mkdtemp(join(scratch, 'parse-'))
+  const fullTextPath = join(parseDir, 'parsed.txt')
+  await writeFile(fullTextPath, 'Parsed PDF page 1\nParsed PDF page 2\n')
+  try {
+    const calls = []
+    const runtime = {
+      schemas: () => [
+        { name: 'web_fetch', parameters: { properties: { url: {} } } },
+        { name: 'document_parse', parameters: { properties: { path: {} } } },
+      ],
+      execute: async (call) => {
+        calls.push(call)
+        if (call.name === 'web_fetch') return { isError: false, content: [{ type: 'text', text: 'host page' }], value: { url: 'https://example.com/a', statusCode: 200, body: { kind: 'html', content: '<html><body><h1>Title</h1><p>Host readable text</p></body></html>' } } }
+        // document_parse returns a preview plus the full-text path; the fetch tool must store the full text.
+        return { isError: false, content: [{ type: 'text', text: 'Parsed document: preview only' }], value: { details: { outputPath: fullTextPath } } }
+      },
+    }
+    globalThis.fetch = async () => new Response(Buffer.from('%PDF-1.4 fixture'), { headers: { 'content-type': 'application/pdf' } })
+    const { createFetchContentTool } = await import('../lib/fetch-content.js')
+    const { createContentStore } = await import('../lib/content-store.js')
+    const store = createContentStore()
+    const root = await mkdtemp(join(scratch, 'fetch-pdf-'))
+    try {
+      const result = await createFetchContentTool(runtime, { store }).execute({ urls: ['https://arxiv.org/pdf/2401.00001', 'https://example.com/a'] }, execution(root))
+      assert.equal(result.failed, 0, JSON.stringify(result.items))
+      const [pdf, web] = result.items
+      assert.equal(pdf.kind, 'pdf')
+      assert.match(pdf.text, /Parsed PDF page 1/)
+      const parseCall = calls.find((call) => call.name === 'document_parse')
+      assert.ok(parseCall.arguments.path.endsWith('.pdf'))
+      assert.equal(web.text, 'Title\nHost readable text')
+      assert.equal(calls.find((call) => call.name === 'web_fetch').arguments.url, 'https://example.com/a')
+      assert.equal(await readFile(pdf.savedPath, 'utf8'), 'Parsed PDF page 1\nParsed PDF page 2')
+      assert.equal(store.get(pdf.id).text, 'Parsed PDF page 1\nParsed PDF page 2')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  } finally { globalThis.fetch = original }
 })
