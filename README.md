@@ -70,7 +70,7 @@ Summarize controls count decoded characters: `--window-size` (6000), `--overlap`
 
 `feynman_workflow` lets an agent load and perform a workflow without a human slash command.
 
-`feynman_research_role` provides the upstream researcher, writer, verifier and reviewer protocols. `/feynman subagents` lists them; `/feynman run <role> <task>` queues the role task. These are research roles applied through DSH's actual subagent interface, not Pi model aliases or workflow scripts. Missing delegation falls back to lead-owned work. Sixteen prefixed `feynman-*` skills cover literature, critique, replication, recipes, comparison, writing, experiments, paper access, PDF exploration, plain-language explanation, preview and continuity.
+`feynman_research_role` provides the upstream researcher, writer, verifier and reviewer protocols, including each role's upstream `thinking` level (researcher/reviewer high; verifier/writer medium) and tool policy—the writer has no retrieval tools. `/feynman subagents` lists them; `/feynman run <role> <task>` queues the role task. The payload adds a `delegation` block so the parent passes `reasoning_effort` only when DSH's subagent schema exposes it; DSH cannot enforce a child tool allowlist, so the task must state it. These are research roles applied through DSH's actual subagent interface, not Pi model aliases or workflow scripts. Missing delegation falls back to lead-owned work. Sixteen prefixed `feynman-*` skills cover literature, critique, replication, recipes, comparison, writing, experiments, paper access, PDF exploration, plain-language explanation, preview and continuity.
 
 ## AlphaXiv
 
@@ -95,7 +95,7 @@ The bundled Alpha Hub client handles OAuth and refresh. Login displays its conse
 
 `/feynman search [query]` browses **stored web and fetched-source results in the current session**. `/feynman websearch <query>` queues live web research. `/feynman curator on` asks the model to show retrieved URLs/snippets and wait for source selection before fetching or synthesis; `off` disables it. Curator state is session-local and ends with disposal/restart.
 
-`outputs` browses `outputs/`, `papers/`, `experiments/` and `notes/`, including older research artifacts. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` writes `AGENTS.md` and `notes/session-logs/README.md` from the upstream templates without a model turn, and never overwrites existing files (`created` vs `kept` is reported). `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` records a reasoning preference without pretending to change provider configuration.
+`outputs` browses `outputs/`, `papers/`, `experiments/` and `notes/`, including older research artifacts. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` writes `AGENTS.md` and `notes/session-logs/README.md` from the upstream templates without a model turn, and never overwrites existing files (`created` vs `kept` is reported). `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` sets the session's reasoning effort through DSH model selection and rejects levels the route does not advertise; it is a real setting, matching upstream's Pi `/thinking`, not a prompt hint.
 
 ## Credentials
 

@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { slugify, stripArxivPrefix, parseLoopArgs, parseSummarizeArgs, loopFollowupPrompt, buildPrompt, WORKFLOWS, SESSION_COMMANDS, THINKING_LEVELS } from '../prompts.js'
-import { apply } from '../index.js'
+import { apply, thinkingHandler } from '../index.js'
 
 // Every Feynman workflow slash command is mapped.
 test('all Feynman workflow commands mapped', () => {
@@ -20,6 +20,34 @@ test('all Feynman workflow commands mapped', () => {
 })
 
 // Every Feynman session/utility command is mapped.
+test('/feynman thinking sets the session effort instead of injecting a preference', async () => {
+  const selected = []
+  const agent = {
+    model: {
+      current: () => ({ provider: 'deepseek', model: 'pro', reasoningEffort: 'low' }),
+      select: (selection) => selected.push(selection),
+    },
+  }
+  const result = await thinkingHandler({ rawInput: 'high', agent }, {})
+  assert.equal(result.kind, 'success')
+  assert.deepEqual(selected, [{ provider: 'deepseek', model: 'pro', reasoningEffort: 'high' }])
+  await thinkingHandler({ rawInput: 'off', agent }, {})
+  assert.deepEqual(selected.at(-1), { provider: 'deepseek', model: 'pro', reasoningEffort: 'off' })
+  const shown = await thinkingHandler({ rawInput: '', agent }, {})
+  assert.match(shown.text, /low/)
+  const noRoute = await thinkingHandler({ rawInput: 'high', agent: { model: { current: () => undefined, select() {} } } }, {})
+  assert.equal(noRoute.kind, 'error')
+  assert.match(noRoute.text, /No model route/)
+})
+
+test('/feynman thinking rejects a level the route does not advertise', async () => {
+  const agent = { model: { current: () => ({ provider: 'deepseek', model: 'pro' }), select() {} } }
+  const ctx = { get: (key) => key === 'llm' ? { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }, { id: 'max' }] } }) } : undefined }
+  const result = await thinkingHandler({ rawInput: 'high', agent }, ctx)
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /Supported: low, max/)
+})
+
 test('all session commands mapped', () => {
   for (const cmd of ['help', 'init', 'outputs', 'btw', 'thinking', 'keys', 'doctor', 'status']) {
     assert.ok(SESSION_COMMANDS[cmd], `missing /${cmd}`)
@@ -578,7 +606,7 @@ test('every workflow brief is byte-identical to the reviewed text', () => {
   digest.update(loopFollowupPrompt('paper X', 2, 2))
   assert.equal(
     digest.digest('hex'),
-    '5ab92a400276b98d236c4d2b6384b7666289c0b80f612c7b34f7096d4708241e',
+    '4dc3b8544fe2a6cf12e4c8431e6b8b29b6b7d58f3c18763c786481be97bef652',
     'prompt text changed: update the digest deliberately',
   )
 })

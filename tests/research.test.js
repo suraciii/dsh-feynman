@@ -174,8 +174,23 @@ test('all research skills load with bounded locators and all four roles have evi
   assert.equal(await provider.get({ name: candidates[0].name, locator: '../../etc/passwd' }), undefined)
   const controller = new AbortController(); controller.abort()
   assert.deepEqual(await provider.list({ signal: controller.signal }), [])
-  for (const role of ['researcher', 'writer', 'verifier', 'reviewer']) assert.ok((await createRoleTool().execute({ role }, execution())).content.length > 100)
+  const roleTool = createRoleTool()
+  for (const role of ['researcher', 'writer', 'verifier', 'reviewer']) {
+    const value = await roleTool.execute({ role }, execution())
+    assert.ok(value.content.length > 100)
+    assert.ok(['low', 'medium', 'high'].includes(value.thinking), `${role} thinking`)
+    assert.equal(value.delegation.reasoning_effort, value.thinking)
+    assert.deepEqual(value.delegation.allowed_tools, value.tools)
+  }
   assert.equal(Object.keys(ROLES).length, 4)
+  assert.equal(ROLES.reviewer.tools, null)
+  assert.ok(!ROLES.writer.tools.includes('web_search'))
+  assert.ok(!ROLES.writer.tools.includes('feynman_fetch_content'))
+  assert.ok(ROLES.researcher.tools.includes('web_search'))
+  const writer = await roleTool.execute({ role: 'writer' }, execution())
+  const rendered = roleTool.output.render({ role: 'writer' }, writer)[0].text
+  assert.match(rendered, /Thinking: medium/)
+  assert.match(rendered, /Retrieval is not allowed/)
 })
 
 const webEvents = [

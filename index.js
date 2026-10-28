@@ -398,12 +398,39 @@ function btwHandler(invocation) {
   return { kind: 'success', text: 'Side question noted as context; the main turn continues undisturbed.' }
 }
 
-function thinkingHandler(invocation) {
+export async function thinkingHandler(invocation, ctx = {}) {
   const level = invocation.rawInput.trim().toLowerCase()
-  if (!level) return { kind: 'success', text: `Thinking levels: ${THINKING_LEVELS.join(', ')}.` }
+  const model = invocation.agent?.model
+  const current = model?.current?.()
+  if (!level) {
+    const active = current?.reasoningEffort ?? 'route default'
+    return { kind: 'success', text: `Thinking level: ${active}. Levels: ${THINKING_LEVELS.join(', ')}.` }
+  }
   if (!THINKING_LEVELS.includes(level)) return err(`Unknown thinking level "${level}". Levels: ${THINKING_LEVELS.join(', ')}.`)
-  invocation.agent.inject(userMessage(invocation, `Reasoning effort preference for upcoming requests: ${level}. Apply if the route supports it.`))
-  return { kind: 'success', text: `Thinking level noted: ${level}. Applies where the model route supports it.` }
+  if (!current?.provider || !current?.model) {
+    return err('No model route is recorded for this session. Choose a model first, then set the thinking level.')
+  }
+  // Validate against the route's advertised efforts when the adapter exposes them;
+  // unsupported values would otherwise fail at the next model request.
+  let supported
+  const llm = service(ctx, 'llm')
+  if (llm?.resolveModelInfo) {
+    try {
+      const info = await llm.resolveModelInfo(current.provider, current.model)
+      supported = info?.reasoning?.efforts?.map((effort) => String(effort.id))
+    } catch {
+      supported = undefined
+    }
+  }
+  if (supported?.length && !supported.includes(level)) {
+    return err(`Model ${current.provider}/${current.model} does not support thinking level "${level}". Supported: ${supported.join(', ')}.`)
+  }
+  try {
+    model.select({ provider: current.provider, model: current.model, reasoningEffort: level })
+  } catch (error) {
+    return err(`Could not set thinking level: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return { kind: 'success', text: `Thinking level set to ${level} for this session.` }
 }
 
 export function apply(ctx, config = {}) {
@@ -439,7 +466,7 @@ export function apply(ctx, config = {}) {
     const disposers = []
     const sessionHandlers = {
       help: helpHandler,
-      init: initHandler, outputs: outputsHandler, btw: btwHandler, thinking: thinkingHandler,
+      init: initHandler, outputs: outputsHandler, btw: btwHandler, thinking: (inv) => thinkingHandler(inv, ctx),
       keys: (inv, context) => keysHandler(inv, context, state),
       doctor: (inv, context) => doctorHandler(inv, context, state),
       status: (inv, context) => statusHandler(inv, context, state),
