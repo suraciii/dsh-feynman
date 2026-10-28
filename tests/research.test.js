@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { createResearchTools } from '../lib/research-tools.js'
 import { createNativeExecutor } from '../lib/upstream.js'
 import { createResearchSkillProvider, createRoleTool, ROLES } from '../lib/resources.js'
@@ -17,6 +17,8 @@ const scratch = fileURLToPath(new URL('../.scratch/', import.meta.url))
 await mkdir(scratch, { recursive: true })
 
 const refs = () => ({ hfTokenEnv: 'TEST_HF_REF', alphaxivTokenEnv: 'TEST_ALPHA_REF' })
+// Keep fetch tests off the network: every hostname resolves to one public address.
+const publicLookup = async () => [{ address: '93.184.216.34' }]
 const execution = (cwd, signal = new AbortController().signal) => ({
   callId: 'fixture-call', rootCallId: 'fixture-call', token: Symbol('execution'), signal,
   agent: { session: { id: 'fixture', header: { cwd } } }, deferContext: () => {},
@@ -304,7 +306,7 @@ test('fetch reads GitHub sources, stores full text, and search_content pages and
     const store = createContentStore()
     const root = await mkdtemp(join(scratch, 'fetch-'))
     try {
-      const tool = createFetchContentTool({ schemas: () => [], execute: async () => { throw new Error('host tools are not needed here') } }, { store })
+      const tool = createFetchContentTool({ schemas: () => [], execute: async () => { throw new Error('host tools are not needed here') } }, { store, lookup: publicLookup })
       const result = await tool.execute({ urls: ['https://github.com/o/r', 'https://github.com/o/r/issues/7'] }, execution(root))
       assert.equal(result.ok, 1)
       assert.equal(result.failed, 1, JSON.stringify(result.items))
@@ -354,7 +356,7 @@ test('fetch parses PDFs through document_parse and falls back to the host reader
     const store = createContentStore()
     const root = await mkdtemp(join(scratch, 'fetch-pdf-'))
     try {
-      const result = await createFetchContentTool(runtime, { store }).execute({ urls: ['https://arxiv.org/pdf/2401.00001', 'https://example.com/a'] }, execution(root))
+      const result = await createFetchContentTool(runtime, { store, lookup: publicLookup }).execute({ urls: ['https://arxiv.org/pdf/2401.00001', 'https://example.com/a'] }, execution(root))
       assert.equal(result.failed, 0, JSON.stringify(result.items))
       const [pdf, web] = result.items
       assert.equal(pdf.kind, 'pdf')
@@ -367,4 +369,135 @@ test('fetch parses PDFs through document_parse and falls back to the host reader
       assert.equal(store.get(pdf.id).text, 'Parsed PDF page 1\nParsed PDF page 2')
     } finally { await rm(root, { recursive: true, force: true }) }
   } finally { globalThis.fetch = original }
+})
+
+test('source_check gathers passages into an artifact without deciding support', async () => {
+  const { createSourceCheckTool, claimTokens, rankPassages, filterSources } = await import('../lib/source-check.js')
+  const { createContentStore } = await import('../lib/content-store.js')
+  const root = await mkdtemp(join(scratch, 'source-check-'))
+  try {
+    assert.deepEqual(claimTokens('The API supports streaming responses'), ['api', 'supports', 'streaming', 'responses'])
+    const ranked = rankPassages('Intro text that is irrelevant here and long enough to pass the filter. The API supports streaming responses over HTTP with chunked transfer encoding. Another sentence about billing.', 'the API supports streaming responses')
+    assert.equal(ranked[0].score, 1)
+    assert.match(ranked[0].text, /chunked transfer/)
+
+    const page = 'Overview paragraph that does not mention the claim and is long enough to be kept. ' +
+      'The API supports streaming responses, so clients receive chunks as they are produced. ' +
+      'Unrelated pricing details are documented elsewhere in this page for completeness.'
+    const calls = []
+    const runtime = {
+      schemas: () => [{ name: 'web_search', parameters: { properties: { queries: { type: 'array' } } } }],
+      execute: async (request) => {
+        calls.push(request)
+        if (request.name === 'web_search') {
+          return {
+            isError: false, content: [{ type: 'text', text: 'two sources' }], additionalContexts: [],
+            value: { sources: [
+              { url: 'https://docs.example.com/api', title: 'API docs', snippet: 'streaming responses' },
+              { url: 'https://docs.example.com/api', title: 'API docs duplicate' },
+              { url: 'https://blog.example.com/post', title: 'Blog' },
+              { url: 'https://spam.example.net/x', title: 'Spam' },
+            ] },
+          }
+        }
+        return {
+          isError: false, content: [{ type: 'text', text: 'fetched' }], additionalContexts: [],
+          value: { ok: 2, failed: 0, items: [
+            { id: 'fetch-1', url: 'https://docs.example.com/api', statusCode: 200, chars: page.length, savedPath: join(root, '.feynman', 'fetch', 'a.txt'), text: page },
+            { id: 'fetch-2', url: 'https://blog.example.com/post', statusCode: 200, chars: 10, savedPath: join(root, '.feynman', 'fetch', 'b.txt'), text: 'Short page.' },
+          ] },
+        }
+      },
+    }
+    const store = createContentStore()
+    const tool = createSourceCheckTool(runtime, { store })
+    const result = await tool.execute({ claim: 'The API supports streaming responses', numResults: 999, domainFilter: ['example.com', '-spam.example.net'] }, execution(root))
+    assert.equal(result.status, 'unclassified')
+    assert.equal(result.sourceCount, 2, JSON.stringify(result.sources.map((s) => s.url)))
+    assert.equal(result.fetchedCount, 2)
+    assert.equal(calls.filter((call) => call.name === 'web_search').length, 1)
+    assert.deepEqual(calls.find((call) => call.name === 'feynman_fetch_content').arguments.urls, ['https://docs.example.com/api', 'https://blog.example.com/post'])
+    assert.match(result.sources[0].passages[0].text, /chunks as they are produced/)
+    assert.match(basename(result.artifact), /^the-api-supports-streaming-responses-[0-9a-f]{6}-source-check\.md$/)
+    const markdown = await readFile(result.artifact, 'utf8')
+    assert.match(markdown, /Status: \*\*unclassified\*\*/)
+    assert.match(markdown, /does not decide whether the claim is supported/)
+    assert.match(markdown, /https:\/\/docs\.example\.com\/api/)
+    assert.doesNotMatch(markdown, /spam\.example\.net/)
+    const json = JSON.parse(await readFile(result.json, 'utf8'))
+    assert.equal(json.status, 'unclassified')
+    assert.equal(json.sources.length, 2)
+    assert.equal(store.get(result.id).text, markdown)
+    assert.match(result.summary, /judge support yourself/)
+    assert.ok(result.summary.length <= 4000)
+
+    const filtered = filterSources([{ url: 'https://a.example.com/x' }, { url: 'https://b.other.net/y' }], ['example.com'])
+    assert.deepEqual(filtered.map((s) => s.url), ['https://a.example.com/x'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('source_check reports search failure instead of inventing evidence', async () => {
+  const { createSourceCheckTool } = await import('../lib/source-check.js')
+  const runtime = {
+    schemas: () => [{ name: 'web_search', parameters: { properties: { queries: {} } } }],
+    execute: async () => ({ isError: true, content: [{ type: 'text', text: 'provider unavailable' }], additionalContexts: [] }),
+  }
+  const tool = createSourceCheckTool(runtime)
+  await assert.rejects(tool.execute({ claim: 'anything' }, execution()), /provider unavailable/)
+})
+
+test('fetch refuses local and private addresses unless explicitly allowed', async () => {
+  const { createFetchContentTool } = await import('../lib/fetch-content.js')
+  const { createContentStore } = await import('../lib/content-store.js')
+  const root = await mkdtemp(join(scratch, 'fetch-ssrf-'))
+  const original = globalThis.fetch
+  try {
+    const tool = createFetchContentTool({ schemas: () => [], execute: async () => { throw new Error('host tools are not needed here') } }, { store: createContentStore(), lookup: publicLookup })
+    const blocked = await tool.execute({ url: 'http://169.254.169.254/latest/meta-data' }, execution(root))
+    assert.equal(blocked.failed, 1)
+    assert.match(blocked.items[0].error, /private addresses are blocked/)
+
+    const resolving = createFetchContentTool({ schemas: () => [], execute: async () => { throw new Error('no host tools') } }, { store: createContentStore(), lookup: async () => [{ address: '127.0.0.1' }] })
+    const rebound = await resolving.execute({ url: 'http://rebind.example/docs' }, execution(root))
+    assert.equal(rebound.failed, 1)
+    assert.match(rebound.items[0].error, /resolves to the private address 127\.0\.0\.1/)
+    assert.doesNotMatch(rebound.items[0].error, /fetch failed/)
+
+    process.env.FEYNMAN_FETCH_ALLOW_LOCAL = '1'
+    globalThis.fetch = async () => new Response('local docs', { headers: { 'content-type': 'text/plain' } })
+    const allowed = await tool.execute({ url: 'http://127.0.0.1:8080/docs' }, execution(root))
+    assert.equal(allowed.ok, 1, JSON.stringify(allowed.items))
+    assert.equal(allowed.items[0].text, 'local docs')
+  } finally {
+    delete process.env.FEYNMAN_FETCH_ALLOW_LOCAL
+    globalThis.fetch = original
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+
+test('source_check handles Chinese claims and keeps non-Latin files distinct', async () => {
+  const { createSourceCheckTool } = await import('../lib/source-check.js')
+  const { createContentStore } = await import('../lib/content-store.js')
+  const page = '背景段落，与论断无关，只是填充内容而已，长度也足够作为一句。' +
+    'Transformer 用自注意力取代了循环结构，因此可以并行训练，这也是该架构的核心优势。' +
+    '另一段讨论的是别的内容，同样只是填充。'
+  const runtime = {
+    schemas: () => [{ name: 'web_search', parameters: { properties: { queries: {} } } }],
+    execute: async (request) => request.name === 'web_search'
+      ? { isError: false, content: [{ type: 'text', text: 'zh' }], additionalContexts: [], value: { sources: [{ url: 'https://example.com/zh', title: '中文资料' }] } }
+      : { isError: false, content: [{ type: 'text', text: 'fetched' }], additionalContexts: [], value: { items: [{ id: 'zh-1', url: 'https://example.com/zh', statusCode: 200, chars: page.length, savedPath: '/tmp/zh.txt', text: page }] } },
+  }
+  const root = await mkdtemp(join(scratch, 'source-check-zh-'))
+  try {
+    const tool = createSourceCheckTool(runtime, { store: createContentStore() })
+    const result = await tool.execute({ claim: 'Transformer 用自注意力取代循环结构' }, execution(root))
+    assert.equal(result.sources[0].passages.length, 1, JSON.stringify(result.sources[0].passages))
+    assert.ok(result.sources[0].passages[0].score >= 0.8, String(result.sources[0].passages[0].score))
+    assert.match(result.sources[0].passages[0].text, /取代了循环结构/)
+    assert.match(basename(result.artifact), /^transformer-[0-9a-f]{6}-source-check\.md$/)
+    const other = await tool.execute({ claim: '完全不同的中文断言' }, execution(root))
+    assert.match(basename(other.artifact), /^claim-[0-9a-f]{6}-source-check\.md$/)
+    assert.notEqual(other.artifact, result.artifact)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

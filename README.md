@@ -12,9 +12,15 @@ Requires DeepSeek Harness `>=0.2.1-rc.2 <0.3.0`. Restart DSH and refresh the bro
 dsh plugin --profile web add --save-exact @maci0/dsh-feynman@0.24.0
 ```
 
-Install as a bundle, then restart `dsh web` and refresh the browser. The package's own `cordis.patch.yml` mounts its writable configuration row. Do not also insert the row into the profile patch: Cordis does not deduplicate row IDs.
+Install as a bundle, then restart `dsh web` and refresh the browser. The package's `cordis.patch.yml` declares one session preset, `feynman`; the research surface mounts only in sessions that pick **Feynman 研究模式** in the mode selector, and every other mode carries none of its tools, skills, commands or prompt sections. To mount the research surface in every session instead, add a root-level `feynman` row to the profile patch. Never do both: Cordis does not deduplicate row IDs.
 
 Node `^22.22.0 || >=24.0.0` is required; the Alpha Hub dependency sets the Node 22 floor. A bare GitHub spec follows `main`; pin a tag for reproducible installs. `/feynman doctor` reports mounted research seams and key state. `/feynman tools` lists the actual tool catalog.
+
+## Research mode
+
+The bundle declares a preset, not a host-level row. A preset is an ordinary plugin-row list, so the preset's children clone DSH's built-in `standard` preset (configs included) with the persona swapped for Feynman's and the `@maci0/dsh-feynman` row appended last. Selecting the mode composes that subtree for one session; delegated children inherit it, so the research surface and role protocols travel with the delegation.
+
+Override a child from a profile patch keyed by the declaration id (`preset-feynman`), and disable the mode entirely with `- id: preset-feynman` / `disabled: true`. Upgrading DSH can add or rename entries in its `standard` preset; the cloned list here is only as current as the plugin release.
 
 ## Research workflows
 
@@ -56,9 +62,13 @@ Summarize controls count decoded characters: `--window-size` (6000), `--overlap`
 
 `code_search` uses an existing host code-search tool when mounted; otherwise the plugin bridges to host web search for public repository/docs examples.
 
-`feynman_fetch_content` fetches remote sources as readable text. HTML goes through the host `web_fetch` reader when mounted and falls back to a direct status-checked request; `.pdf` URLs are saved into `.feynman/fetch/` and parsed with `document_parse`, returning the full parsed text rather than the parser's preview; GitHub repositories, issues, pull requests, blobs and trees resolve through the public API/raw endpoints. Up to six URLs per call. Failures are reported per URL instead of aborting the batch.
+`feynman_fetch_content` fetches remote sources as readable text. It refuses loopback and private/link-local targets by default — literal addresses and hostnames that resolve to them (`FEYNMAN_FETCH_ALLOW_LOCAL=1` skips the guard for a local docs server or a DNS-filtering proxy). HTML goes through the host `web_fetch` reader when mounted and falls back to a direct status-checked request; `.pdf` URLs are saved into `.feynman/fetch/` and parsed with `document_parse`, returning the full parsed text rather than the parser's preview; GitHub repositories, issues, pull requests, blobs and trees resolve through the public API/raw endpoints. Up to six URLs per call. Failures are reported per URL instead of aborting the batch.
 
-`feynman_search_content` reads content already stored in this session or by `feynman_fetch_content`: `offset`/`limit` page through a long document, `findText` locates passages (literal by default, `findMode: "regex"` for a pattern) with surrounding context. `feynman_workflow` lets an agent load and perform a workflow without a human slash command.
+`feynman_search_content` reads content already stored in this session or by `feynman_fetch_content`: `offset`/`limit` page through a long document, `findText` locates passages (literal by default, `findMode: "regex"` for a pattern) with surrounding context.
+
+`feynman_source_check` gathers evidence for one claim: it searches, optionally fetches up to five pages, ranks sentences by shared content words (CJK claims match on character bigrams), and writes `outputs/<slug>-<hash>-source-check.md` plus a `.json` sidecar; the six-character hash keeps non-Latin claims in distinct files. It reports passages and a `status: "unclassified"` marker, never a verdict — the model reads the passages and cites the URL with the quoted text.
+
+`feynman_workflow` lets an agent load and perform a workflow without a human slash command.
 
 `feynman_research_role` provides the upstream researcher, writer, verifier and reviewer protocols. `/feynman subagents` lists them; `/feynman run <role> <task>` queues the role task. These are research roles applied through DSH's actual subagent interface, not Pi model aliases or workflow scripts. Missing delegation falls back to lead-owned work. Sixteen prefixed `feynman-*` skills cover literature, critique, replication, recipes, comparison, writing, experiments, paper access, PDF exploration, plain-language explanation, preview and continuity.
 
@@ -85,7 +95,7 @@ The bundled Alpha Hub client handles OAuth and refresh. Login displays its conse
 
 `/feynman search [query]` browses **stored web and fetched-source results in the current session**. `/feynman websearch <query>` queues live web research. `/feynman curator on` asks the model to show retrieved URLs/snippets and wait for source selection before fetching or synthesis; `off` disables it. Curator state is session-local and ends with disposal/restart.
 
-`outputs` browses `outputs/`, `papers/`, `experiments/` and `notes/`, including older research artifacts. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` bootstraps research directories and preserves existing project instructions. `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` records a reasoning preference without pretending to change provider configuration.
+`outputs` browses `outputs/`, `papers/`, `experiments/` and `notes/`, including older research artifacts. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` writes `AGENTS.md` and `notes/session-logs/README.md` from the upstream templates without a model turn, and never overwrites existing files (`created` vs `kept` is reported). `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` records a reasoning preference without pretending to change provider configuration.
 
 ## Credentials
 

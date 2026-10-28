@@ -11,12 +11,16 @@
  */
 import { WORKFLOWS, SESSION_COMMANDS, THINKING_LEVELS, buildPrompt, parseLoopArgs, parseSummarizeArgs, loopFollowupPrompt } from './prompts.js'
 
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import { mountResearchTools } from './lib/research-tools.js'
 import { createResearchSkillProvider, createRoleTool, ROLES } from './lib/resources.js'
 import { createSearchContentTool, createCodeSearchTool, storedWebResults } from './lib/web-results.js'
 import { createFetchContentTool } from './lib/fetch-content.js'
+import { createSourceCheckTool } from './lib/source-check.js'
+import { describeScaffold, scaffoldProject } from './lib/init-scaffold.js'
 import { createContentStore } from './lib/content-store.js'
 import { alphaCommand } from './lib/alpha-command.js'
 import { createWorkflowTool } from './lib/workflow-tool.js'
@@ -224,7 +228,7 @@ function researchHandler(invocation, ctx, sessionHandlers, state) {
   // The registry admits attachments for the whole command; a subcommand that
   // queues no message must refuse them so the composer keeps the originals.
   if (invocation.attachments.length > 0 && !queuesMessage(name, rest)) {
-    return err(`/feynman ${name || '(bare)'} does not use attachments; attach them to a workflow, log, init, outputs, or btw.`)
+    return err(`/feynman ${name || '(bare)'} does not use attachments; attach them to a workflow, log, outputs, or btw.`)
   }
   if (!name) return helpHandler({ ...invocation, rawInput: '' })
   const subInvocation = { ...invocation, rawInput: rest }
@@ -235,7 +239,7 @@ function researchHandler(invocation, ctx, sessionHandlers, state) {
 }
 
 /** Session subcommands whose handler sends the invocation's attachments to the model. */
-const MESSAGE_SESSION_COMMANDS = new Set(['init', 'outputs', 'btw', 'run', 'websearch'])
+const MESSAGE_SESSION_COMMANDS = new Set(['outputs', 'btw', 'run', 'websearch'])
 
 /** Whether `/feynman <name> <rest>` carries its attachments into a queued message. */
 function queuesMessage(name, rest) {
@@ -305,6 +309,19 @@ function userMessage(invocation, text) {
   })
 }
 
+const runExecutable = promisify(execFile)
+
+/** `pandoc` powers the preview skill; report it instead of assuming it exists. */
+async function pandocState() {
+  try {
+    const { stdout } = await runExecutable('pandoc', ['--version'], { timeout: 4000 })
+    const version = stdout.split('\n')[0].trim()
+    return version || 'available'
+  } catch {
+    return 'missing (install from pandoc.org; PDF output also needs a LaTeX engine)'
+  }
+}
+
 async function doctorHandler(invocation, ctx, state) {
   if (invocation.rawInput.trim()) return err('Usage: /feynman doctor (no arguments)')
   const refs = liveRefs(state)
@@ -320,6 +337,7 @@ async function doctorHandler(invocation, ctx, state) {
   lines.push(`- Config card: ${cardState(ctx)}`)
   try { await import('@llamaindex/liteparse'); lines.push('- Native document parser: available') }
   catch { lines.push('- Native document parser: unavailable on this installation/platform; check LiteParse optional dependencies') }
+  lines.push(`- Pandoc (preview): ${await pandocState()}`)
   return { kind: 'success', text: lines.join('\n') }
 }
 
@@ -355,10 +373,15 @@ function followupHandler(invocation, prompt, ack) {
   return { kind: 'success', text: ack }
 }
 
-function initHandler(invocation) {
-  return followupHandler(invocation,
-    'Bootstrap check for a research project: ensure AGENTS.md exists and outputs/.plans/ plus outputs/.drafts/ directories exist in the workspace, creating what is missing (ask before overwriting an existing AGENTS.md). Report what was created vs already present.',
-    'Project bootstrap queued as the next turn.')
+async function initHandler(invocation) {
+  if (invocation.rawInput.trim()) return err('Usage: /feynman init (no arguments)')
+  const root = invocation.agent?.session?.header?.cwd
+  if (!root) return err('No workspace is available; open a project session and rerun /feynman init')
+  try {
+    return { kind: 'success', text: describeScaffold(await scaffoldProject(root)) }
+  } catch (error) {
+    return err(`Could not scaffold the project: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 function outputsHandler(invocation) {
@@ -392,13 +415,14 @@ export function apply(ctx, config = {}) {
     scope.tools.register(createRoleTool())
     scope.tools.register(createFetchContentTool(scope.tools, { store: state.content }))
     scope.tools.register(createSearchContentTool({ store: state.content }))
+    scope.tools.register(createSourceCheckTool(scope.tools, { store: state.content }))
     scope.tools.register(createWorkflowTool(() => liveRefs(state)))
     if (!scope.tools.schemas?.().some((tool) => tool.name === 'code_search')) scope.tools.register(createCodeSearchTool(scope.tools))
   })
   ctx.inject?.(['skills'], (scope) => scope.skills.registerProvider(createResearchSkillProvider))
   ctx.inject?.(['systemPrompt'], (scope) => scope.systemPrompt.section({
     name: 'feynman-research', order: 700, interpolate: false,
-    text: () => `Research date (UTC): ${new Date().toISOString().slice(0, 10)}. Prefer primary evidence; distinguish source assertions, inferences, and verified checks. Research tools: feynman_fetch_content for PDFs, GitHub repositories/issues, and multi-URL batches; feynman_search_content to page (offset/limit) or search (findText) a long fetched source; feynman_science_database_search, Hugging Face inspection, document_parse/search/screenshot, authenticated alpha tools when visible. Load feynman_research_role before role-specific delegation; use DSH's actual subagent schema and consume completed results before synthesis. Never invent measurements or citations; keep numeric claims and visuals tied to raw evidence. Write final research artifacts and provenance to disk and check they exist before delivery. Read existing CHANGELOG.md before resuming substantial work; append meaningful progress and blockers, not trivial one-shot changes.`,
+    text: () => `Research date (UTC): ${new Date().toISOString().slice(0, 10)}. Prefer primary evidence; distinguish source assertions, inferences, and verified checks. Research tools: feynman_fetch_content for PDFs, GitHub repositories/issues, and multi-URL batches; feynman_search_content to page (offset/limit) or search (findText) a long fetched source; feynman_source_check to gather claim-level passages into outputs/<slug>-source-check.md (read them; the artifact is not a verdict); feynman_science_database_search, Hugging Face inspection, document_parse/search/screenshot, authenticated alpha tools when visible. Load feynman_research_role before role-specific delegation; use DSH's actual subagent schema and consume completed results before synthesis. Never invent measurements or citations; keep numeric claims and visuals tied to raw evidence. Write final research artifacts and provenance to disk and check they exist before delivery. Read existing CHANGELOG.md before resuming substantial work; append meaningful progress and blockers, not trivial one-shot changes.`,
   }))
   ctx.effect(() => () => { state.disposed = true; state.loginProcess?.kill() })
   ctx.on('tools/post-execute', async (exec, result, next) => {
@@ -421,7 +445,7 @@ export function apply(ctx, config = {}) {
       status: (inv, context) => statusHandler(inv, context, state),
       tools: () => {
         if (!state.toolRuntime) return err('The tools service is not mounted.')
-        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content })]
+        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content }), createSourceCheckTool(undefined, { store: state.content })]
         return { kind: 'success', text: tools.map((tool) => `${tool.name}: ${tool.description.split('\n')[0]}\n  Parameters: ${Object.keys(tool.parameters?.properties ?? {}).join(', ') || '(none)'}`).join('\n') || 'No tools are registered.' }
       },
       subagents: () => ({ kind: 'success', text: Object.entries(ROLES).map(([role, spec]) => `${role}: ${spec.description}`).join('\n') }),

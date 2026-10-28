@@ -1,6 +1,9 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { slugify, stripArxivPrefix, parseLoopArgs, parseSummarizeArgs, loopFollowupPrompt, buildPrompt, WORKFLOWS, SESSION_COMMANDS, THINKING_LEVELS } from '../prompts.js'
 import { apply } from '../index.js'
 
@@ -245,7 +248,7 @@ test('subcommands that queue no message refuse attachments instead of dropping t
   }, {})
   const image = Object.freeze({ type: 'image', attachment: { hash: 'h', mediaType: 'image/png' } })
   const run = (rawInput) => handler({ rawInput, agent, attachments: [image] })
-  for (const line of ['', 'help', 'doctor', 'status', 'keys',
+  for (const line of ['', 'help', 'doctor', 'status', 'keys', 'init',
     'thinking', 'thinking high', 'review-loop stop']) {
     const result = await run(line)
     assert.equal(result.kind, 'error', `/feynman ${line} dropped an attachment: ${result.text}`)
@@ -253,7 +256,7 @@ test('subcommands that queue no message refuse attachments instead of dropping t
   }
   assert.equal(followups.length + injected.length, 0, 'a refused invocation queued a message')
   // Every message-queuing subcommand carries the attachment into the model turn.
-  for (const line of ['deepresearch x', 'review-loop paper.pdf 2', 'summarize paper.pdf', 'log', 'init', 'outputs', 'btw why']) {
+  for (const line of ['deepresearch x', 'review-loop paper.pdf 2', 'summarize paper.pdf', 'log', 'outputs', 'btw why']) {
     const result = await run(line)
     assert.equal(result.kind, 'success', `/feynman ${line}: ${result.text}`)
     const sent = [...followups, ...injected].at(-1)
@@ -575,7 +578,7 @@ test('every workflow brief is byte-identical to the reviewed text', () => {
   digest.update(loopFollowupPrompt('paper X', 2, 2))
   assert.equal(
     digest.digest('hex'),
-    '2809c3aa1b034903a7510793cf5942d9669edb8a7439cd4317618545f5c64ddf',
+    '5ab92a400276b98d236c4d2b6384b7666289c0b80f612c7b34f7096d4708241e',
     'prompt text changed: update the digest deliberately',
   )
 })
@@ -666,4 +669,37 @@ test('/feynman log queues the upstream session-log brief with and without a focu
   const attached = await handler({ rawInput: 'log', agent, attachments: [{ type: 'text', text: 'keep me' }] })
   assert.equal(attached.kind, 'success', 'log carries attachments into its queued message')
   assert.equal(queued.at(-1).content.length, 2)
+})
+
+// `/feynman init` writes the upstream templates itself and keeps existing files.
+test('init scaffolds AGENTS.md and session-log folders without a model turn', async () => {
+  let handler
+  const followups = []
+  apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
+  const scratch = fileURLToPath(new URL('../.scratch/', import.meta.url))
+  const root = await mkdtemp(join(scratch, 'init-'))
+  const invocation = { rawInput: 'init', agent: { session: { id: 's', header: { cwd: root } }, followup: (message) => followups.push(message), inject: () => {} }, attachments: [] }
+  const first = await handler(invocation)
+  assert.equal(first.kind, 'success', first.text)
+  assert.match(first.text, /created: AGENTS\.md, notes\/session-logs\/README\.md/)
+  const agents = await readFile(join(root, 'AGENTS.md'), 'utf8')
+  assert.match(agents, /## Verification Gates/)
+  assert.match(await readFile(join(root, 'notes', 'session-logs', 'README.md'), 'utf8'), /Use `\/log`/)
+  assert.equal(followups.length, 0, 'init must not queue a model turn')
+
+  await writeFile(join(root, 'AGENTS.md'), '# my own guide\n')
+  const second = await handler(invocation)
+  assert.match(second.text, /created: nothing; kept existing: AGENTS\.md, notes\/session-logs\/README\.md/)
+  assert.equal(await readFile(join(root, 'AGENTS.md'), 'utf8'), '# my own guide\n')
+  assert.equal((await handler({ ...invocation, rawInput: 'init extra' })).kind, 'error')
+  assert.equal((await handler({ ...invocation, agent: { session: { id: 's' } } })).kind, 'error')
+})
+
+// Pandoc powers the preview skill; doctor reports it instead of assuming it.
+test('doctor reports pandoc availability', async () => {
+  let handler
+  apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
+  const result = await handler({ rawInput: 'doctor', agent: { session: { id: 's' } }, attachments: [] })
+  assert.equal(result.kind, 'success')
+  assert.match(result.text, /- Pandoc \(preview\): /)
 })

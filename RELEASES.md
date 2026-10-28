@@ -2,9 +2,15 @@
 
 - Add `feynman_fetch_content`: PDFs are saved into `.feynman/fetch/` and parsed to full text, GitHub repositories/issues/pull requests/blobs/trees resolve through the public API, HTML uses the host `web_fetch` reader with a direct status-checked fallback, and up to six URLs are fetched per call with per-URL errors. Full text is kept under an id for later paging.
 - Add `offset`/`limit` paging and `findText` search (`findMode: "regex"`) to `feynman_search_content`, and let it read fetched documents as well as session web results.
+- Add `feynman_source_check`: it searches for one claim, fetches up to five pages, ranks sentences by shared content words (CJK claims use character bigrams), and writes `outputs/<slug>-<hash>-source-check.md` plus a `.json` sidecar with a `status: "unclassified"` marker. The artifact lists passages; support stays a human/model judgement.
+- Refuse loopback and private/link-local targets in `feynman_fetch_content` unless `FEYNMAN_FETCH_ALLOW_LOCAL=1`: literal addresses plus a DNS preflight of every resolved address, mirroring the host reader's public-address policy (preflight, not connection pinning).
+- Make `/feynman init` deterministic: it writes `AGENTS.md` and `notes/session-logs/README.md` from the upstream templates, keeps existing files, and queues no model turn.
+- Report pandoc in `/feynman doctor` with install guidance instead of leaving preview availability unknown.
 - Move `log` into the workflow catalog so `feynman_workflow` can load it; `/feynman log [focus]` keeps working and no longer references a missing workflow.
 - Backport the upstream arXiv fallbacks from v0.5.45/v0.5.46 (present in v0.5.58): a topic-shaped arXiv query falls back to OpenAlex semantic search, and an arXiv timeout/429/5xx falls back to Semantic Scholar records; an OpenAlex miss for an arXiv DOI is retried on arXiv.
 - Correct agent-facing text that described parameters DSH does not expose: role web filters, Pi `output` on subagents, `alpha_search` in shell, the pandoc claim in the preview skill, plain `rg` over compressed transcripts, and the broken deep-research verifier/reviewer steps and provenance filename.
+- Ship the research surface as a session preset instead of a host-level row. Installing the bundle no longer mounts research tools in every mode; select **Feynman 研究模式** in the mode selector, and sessions in other modes stay clean.
+- The preset clones DSH's built-in `standard` preset with the Feynman persona, so a DSH upgrade that changes `standard` may need a matching plugin release.
 
 ## v0.24.0
 
