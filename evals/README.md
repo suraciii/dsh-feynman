@@ -2,7 +2,10 @@
 
 A fixed question set run through the real plugin, scored deterministically. The purpose is to answer "did this prompt/tool change make the research better or worse?" with files on disk instead of inspection.
 
-Stage A (this directory) checks the **artifact contract**. Citation validity and key-paper recall are stage B and are not scored yet.
+Two stages, one command:
+
+- **Stage A** checks the artifact contract: did the run leave the promised files, with provenance and evidence-shaped content?
+- **Stage B** resolves the cited arXiv IDs and DOIs and checks that each identifier is attached to the right paper (`title`), plus key-paper recall against the question's expected papers (`recall`). Lookup failures are excluded rather than counted as bad citations.
 
 ## Run
 
@@ -11,7 +14,9 @@ export DEEPSEEK_API_KEY=...          # the route's key; headless ignores the GUI
 node evals/run.mjs --model deepseek/official --ids q01,q04 --workflow lit
 ```
 
-Options: `--workflow lit|deepresearch`, `--ids q01,q04`, `--timeout-min 45`, `--work-root <dir>`, `--score-only <workdir> --slug <slug>`.
+Options: `--workflow lit|deepresearch`, `--ids q01,q04`, `--timeout-min 45`, `--work-root <dir>`, `--results-dir <dir>`, `--score-only <workdir> --slug <slug>`, `--no-resolve`.
+
+`--no-resolve` skips the network lookups and leaves `valid`/`title` null. Use it for offline scoring or when arXiv/Crossref are unreachable; stage-A columns and `recall` (which is local) are unaffected.
 
 Results go to `evals/results/<date>-<workflow>-<model>.jsonl` (one row per question) plus a `.md` summary. Workspaces stay under `--work-root` (default `~/.cache/dsh-feynman-evals`) so a scorer change can rescore them without rerunning the model.
 
@@ -23,12 +28,15 @@ Results go to `evals/results/<date>-<workflow>-<model>.jsonl` (one row per quest
 | `plan` | `outputs/.plans/<slug>.md` exists. |
 | `provenance_fields` | How many of the 8 required provenance labels are present (Date, Rounds, Sources consulted/accepted/rejected, Verification, Plan, Research files). |
 | `sources` | Unique URLs, preferring the document's Sources/References section. |
-| `cites` | Distinct arXiv IDs and DOIs in the final artifact (no resolution yet). |
+| `cites` | Distinct arXiv IDs and DOIs in the final artifact. arXiv needs an `arXiv:`/URL prefix; arXiv's own DOI prefix is resolved as an arXiv id. |
+| `valid` | Share of looked-up identifiers that resolve (arXiv API, Crossref, then the doi.org handle system). Failed lookups are left out of the denominator; `unresolved` lists the misses. |
+| `title` | Among resolved identifiers with a known title, share whose title is at least 60% present (content-token overlap) on a line carrying the identifier, or whose first author's surname appears there. `title_mismatch` lists the rest with the resolved title and overlap. |
+| `recall` | Share of the question's expected key papers that appear in the artifact, matched by any listed identifier or by the exact normalized title. `key_missing` lists the rest. |
 | `todos` | `TODO` markers: an explicit "not verified" is allowed; an invented result is not. |
 | `blocked` | `Verification: BLOCKED` is recorded. |
 | `wall_seconds` | Wall clock for the whole one-shot run. |
 
-Not scored yet: `valid` (identifier resolves against arXiv/Crossref/doi.org), `title` (the identifier is attached to the right paper), `recall` (expected key papers appear). Those need network lookups and a second scoring pass.
+Stage-B limits: `title` is a token-overlap heuristic, not a human judgement; `recall` only sees the ids/titles listed in `questions.jsonl`, so a better paper than the listed one still scores as a miss; `valid` says an identifier exists, not that it supports the claim.
 
 ## Isolation: no profile changes
 
@@ -60,7 +68,7 @@ Use the same model and the same ids before and after a change, and commit both r
 Example:
 
 ```text
-| id | done | plan | prov | cites | sources | todos | blocked | wall | final | error |
+| id | done | plan | prov | cites | valid | title | recall | sources | todos | blocked | wall | final | error |
 ```
 
 ## Questions and licensing
@@ -76,5 +84,5 @@ Keep the set fixed. Adding or editing a question breaks comparison with earlier 
 ## Status
 
 - Stage A: implemented, unit-tested (`tests/evals.test.js`), and smoke-tested for the no-credential path.
+- Stage B: implemented in `resolve.mjs`, unit-tested with a stubbed `fetch`, and smoke-tested once against live arXiv/Crossref (a real id carrying the wrong title was flagged as a mismatch).
 - Baseline: **not run**. No result files are committed yet; any score you see in a report is from a later, explicitly dated run.
-- Stage B: not implemented.

@@ -24,6 +24,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildPrompt, slugify } from '../prompts.js'
+import { recallFor, scoreCitations } from './resolve.mjs'
 import { scoreWorkdir } from './score.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -46,6 +47,7 @@ Options:
   --timeout-min <n>      Per-question wall-clock limit (default: 45).
   --score-only <dir>     Score an existing workspace; requires --slug and --workflow.
   --slug <slug>          Slug for --score-only.
+  --no-resolve           Skip arXiv/Crossref lookups (keeps valid/title null; recall is local).
   --help                 Show this help.
 
 Workspaces are kept under --work-root so a scorer change can rescore them
@@ -55,8 +57,9 @@ Credentials: export the route's key (for example DEEPSEEK_API_KEY) before runnin
 headless reads the launching environment, not the GUI credential store.
 
 Scores: done (final artifact + provenance), plan, provenance_fields, sources,
-cites, todos, blocked, words, wall. Citation validity and key-paper recall are
-stage B and are not scored here.`
+cites, todos, blocked, words, wall. With lookups enabled it also resolves each
+cited arXiv id/DOI and reports valid and title; --no-resolve skips the lookups.
+Key-paper recall is computed locally either way.`
 }
 
 function parseArgs(argv) {
@@ -70,6 +73,7 @@ function parseArgs(argv) {
     timeoutMin: 45,
     scoreOnly: undefined,
     slug: undefined,
+    resolve: true,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -90,6 +94,7 @@ function parseArgs(argv) {
       case '--timeout-min': options.timeoutMin = Number(next()); break
       case '--score-only': options.scoreOnly = resolve(next()); break
       case '--slug': options.slug = next(); break
+      case '--no-resolve': options.resolve = false; break
       default: throw new Error(`unknown argument: ${arg}`)
     }
   }
@@ -168,15 +173,19 @@ function credentialGuidance(error) {
   return error !== undefined && /MISSING_CREDENTIAL|no API key/i.test(error)
 }
 
+function pct(value) {
+  return value === null || value === undefined ? '–' : `${Math.round(value * 100)}%`
+}
+
 function summary(rows, options, git) {
   const head = `# Evals: ${options.workflow} · ${options.model}\n\n` +
     `- Date: ${new Date().toISOString()}\n- Git: ${git.sha}${git.dirty ? ' (dirty)' : ''}\n- Questions: ${rows.length}\n` +
-    `- Scores: done / plan / provenance fields / sources / cites / todos / blocked / wall seconds\n` +
-    `- Stage A only: citation validity and key-paper recall are not scored here.\n\n` +
-    '| id | done | plan | prov | cites | sources | todos | blocked | wall | final | error |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|\n'
+    `- Scores: done / plan / provenance fields / cites / valid / title / recall / sources / todos / blocked / wall seconds\n` +
+    `- ${options.resolve ? 'Citation lookups: arXiv + Crossref + doi.org.' : 'Citation lookups skipped (--no-resolve): valid/title are null; recall is still local.'}\n\n` +
+    '| id | done | plan | prov | cites | valid | title | recall | sources | todos | blocked | wall | final | error |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n'
   const body = rows.map(row =>
-    `| ${row.id} | ${row.done} | ${row.plan} | ${row.provenance_fields}/8 | ${row.cites} | ${row.sources} | ${row.todos} | ${row.blocked} | ${row.wall_seconds.toFixed(1)} | ${row.final ?? '—'} | ${row.error === undefined ? '' : row.error.slice(0, 80).replaceAll('|', '\\|')} |`,
+    `| ${row.id} | ${row.done} | ${row.plan} | ${row.provenance_fields}/8 | ${row.cites} | ${pct(row.valid)} | ${pct(row.title)} | ${pct(row.recall)} | ${row.sources} | ${row.todos} | ${row.blocked} | ${row.wall_seconds.toFixed(1)} | ${row.final ?? '—'} | ${row.error === undefined ? '' : row.error.slice(0, 80).replaceAll('|', '\\|')} |`,
   ).join('\n')
   const done = rows.filter(row => row.done === 1).length
   const blocked = rows.filter(row => row.blocked === 1).length
@@ -224,6 +233,12 @@ async function main() {
     process.stderr.write(`[${question.id}] ${options.workflow} · ${slug}\n`)
     const run = await runHeadless({ task, cwd: workdir, patch, home, timeoutMs: options.timeoutMin * 60_000, bin })
     const score = scoreWorkdir({ workdir, slug, workflow: options.workflow })
+    const finalText = score.final === null ? '' : readFileSync(join(workdir, score.final), 'utf8')
+    const recall = score.final === null ? { recall: null, key_missing: [] } : recallFor(question, finalText)
+    let citation
+    if (options.resolve && score.final !== null) {
+      citation = await scoreCitations(finalText).catch(error => ({ error: String(error) }))
+    }
     const row = {
       id: question.id,
       field: question.field,
@@ -239,9 +254,17 @@ async function main() {
       stderr: run.stderr === '' ? undefined : run.stderr,
       wall_seconds: run.wall,
       ...score,
+      valid: citation?.valid ?? null,
+      valid_checked: citation?.checked ?? null,
+      title: citation?.title ?? null,
+      unresolved: citation?.unresolved ?? [],
+      title_mismatch: citation?.title_mismatch ?? [],
+      recall: recall.recall,
+      key_missing: recall.key_missing,
+      resolve_error: citation?.error,
     }
     rows.push(row)
-    process.stderr.write(`[${question.id}] done=${row.done} cites=${row.cites} sources=${row.sources} wall=${row.wall_seconds.toFixed(1)}s${row.error === undefined ? '' : ` error=${row.error}`}\n`)
+    process.stderr.write(`[${question.id}] done=${row.done} cites=${row.cites} valid=${pct(row.valid)} title=${pct(row.title)} recall=${pct(row.recall)} wall=${row.wall_seconds.toFixed(1)}s${row.error === undefined ? '' : ` error=${row.error}`}\n`)
     if (credentialGuidance(run.error)) {
       process.stderr.write('\nMissing model credentials: export the route key (for example DEEPSEEK_API_KEY) and rerun. Headless ignores GUI-saved sign-in. Aborting remaining questions; no results written.\n')
       process.exitCode = 1

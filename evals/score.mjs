@@ -130,16 +130,36 @@ export function extractSources(text) {
 }
 
 /**
+ * Extract cited identifiers the way the resolver sees them.
+ * arXiv needs a URL/`arXiv:`/`10.48550/arxiv.` prefix so version numbers and
+ * dates are not mistaken for papers; DOIs are deduplicated case-insensitively
+ * and arXiv's own DOI prefix is skipped (it is resolved as an arXiv id).
+ * @param text - final artifact contents.
+ * @returns `{ kind, id }[]`, de-duplicated and in first-seen order.
+ */
+export function extractIds(text) {
+  const ids = new Map()
+  for (const found of text.matchAll(/(?:arxiv\.org\/(?:abs|pdf|html)\/|alphaxiv\.org\/(?:abs|overview)\/|arxiv:\s*|10\.48550\/arxiv\.)(\d{4}\.\d{4,5})/gi)) {
+    ids.set(`arxiv:${found[1]}`, { kind: 'arxiv', id: found[1] })
+  }
+  for (const found of text.matchAll(/\b10\.\d{4,9}\/[^\s"'<>()[\]{}|,;`]+/g)) {
+    const doi = found[0].replace(/[.*_:]+$/, '')
+    if (/^10\.48550\//i.test(doi)) continue
+    ids.set(`doi:${doi.toLowerCase()}`, { kind: 'doi', id: doi })
+  }
+  return [...ids.values()]
+}
+
+/**
  * Count distinct arXiv IDs and DOIs mentioned in the artifact.
  * @param text - final artifact contents.
  * @returns `{ arxiv, doi, distinct }` where each set is a sorted array.
  */
 export function countIdentifiers(text) {
-  const arxiv = new Set()
-  const doi = new Set()
-  for (const found of text.matchAll(/\b(\d{4}\.\d{4,5})(?:v\d+)?\b/g)) arxiv.add(found[1])
-  for (const found of text.matchAll(/\b(10\.\d{4,9}\/[^\s"'<>)\]]+)/g)) doi.add(found[1].replace(/[.,;:]+$/, ''))
-  return { arxiv: [...arxiv].sort(), doi: [...doi].sort(), distinct: arxiv.size + doi.size }
+  const ids = extractIds(text)
+  const arxiv = [...new Set(ids.filter(entry => entry.kind === 'arxiv').map(entry => entry.id))].sort()
+  const doi = [...new Set(ids.filter(entry => entry.kind === 'doi').map(entry => entry.id))].sort()
+  return { arxiv, doi, distinct: arxiv.length + doi.length }
 }
 
 /**

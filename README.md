@@ -118,7 +118,7 @@ export DEEPSEEK_API_KEY=...   # headless reads the launching environment, not th
 node evals/run.mjs --model deepseek/official --ids q01,q04 --workflow lit
 ```
 
-The run uses a throwaway `DSH_HOME` and a generated `--patch` overlay that mounts the plugin by absolute path, so it never edits a DSH profile or installs a package. Stage A covers the artifact contract only; citation validity (`valid`, `title`) and key-paper recall (`recall`) are stage B and are not scored yet. The first baseline has not been run. See [evals/README.md](evals/README.md) for licensing, the fidelity caveat, and how to compare before/after runs.
+The run uses a throwaway `DSH_HOME` and a generated `--patch` overlay that mounts the plugin by absolute path, so it never edits a DSH profile or installs a package. Stage A covers the artifact contract; stage B resolves cited arXiv IDs and DOIs (`valid`, `title`) and measures key-paper recall (`recall`); `--no-resolve` keeps a run offline. The first baseline has not been run. See [evals/README.md](evals/README.md) for scoring details, licensing, the fidelity caveat, and how to compare before/after runs.
 
 ## Development
 

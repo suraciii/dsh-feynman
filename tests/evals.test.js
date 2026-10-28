@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { after, describe, it } from 'node:test'
-import { countIdentifiers, countProvenanceFields, countTodos, extractSources, findFinal, findProvenance, isBlocked, scoreWorkdir } from '../evals/score.mjs'
+import { countIdentifiers, countProvenanceFields, countTodos, extractSources, extractIds, findFinal, findProvenance, isBlocked, scoreWorkdir } from '../evals/score.mjs'
+import { parseArxivAtom, recallFor, scoreCitations } from '../evals/resolve.mjs'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const roots = []
@@ -158,7 +159,7 @@ process.stdin.on('end', () => {
     chmodSync(bin, 0o755)
     const questions = join(root, 'questions.jsonl')
     writeFileSync(questions, '{"id":"qx","field":"test","question":"demo topic","key_papers":[],"source":"fixture"}\n')
-    execFileSync(process.execPath, [join(ROOT, 'evals/run.mjs'), '--questions', questions, '--model', 'stub', '--workflow', 'lit', '--work-root', join(root, 'run'), '--results-dir', join(root, 'results')], {
+    execFileSync(process.execPath, [join(ROOT, 'evals/run.mjs'), '--questions', questions, '--model', 'stub', '--workflow', 'lit', '--work-root', join(root, 'run'), '--results-dir', join(root, 'results'), '--no-resolve'], {
       env: { ...process.env, DSH_BIN: bin },
       stdio: 'pipe',
     })
@@ -171,5 +172,85 @@ process.stdin.on('end', () => {
     assert.equal(row.provenance_fields, 8)
     assert.equal(row.cites, 1)
     assert.equal(row.exit_code, 0)
+  })
+})
+
+describe('citation resolution', () => {
+  const ATOM = `<feed><entry><id>http://arxiv.org/abs/2408.03314v2</id><title>The Llama 3 Herd of Models</title><author><name>Abhimanyu Dubey</name></author></entry></feed>`
+  const stub = (overrides = {}) => async url => {
+    if (url.includes('export.arxiv.org')) {
+      if (overrides.arxiv === 'fail') return { ok: false }
+      return { ok: true, text: async () => overrides.atom ?? ATOM }
+    }
+    if (url.includes('api.crossref.org')) {
+      if (overrides.crossref === 'fail') return { ok: false }
+      return { ok: true, json: async () => ({ message: { title: ['A foundation model for the natural sciences'], author: [{ family: 'Smith' }] } }) }
+    }
+    if (url.includes('doi.org/api/handles')) {
+      if (overrides.handle === 'fail') return { ok: false }
+      return { ok: true, json: async () => ({ responseCode: overrides.handleCode ?? 1 }) }
+    }
+    throw new Error(`unexpected url ${url}`)
+  }
+
+  it('extracts only prefixed arXiv ids and skips arXiv DOIs', () => {
+    assert.equal(extractIds('version 2408.03314 alone').length, 0)
+    const ids = extractIds('arXiv:2408.03314 and https://arxiv.org/abs/2501.00001 and 10.48550/arXiv.2408.03314')
+    assert.deepEqual(ids.map(entry => `${entry.kind}:${entry.id}`).sort(), ['arxiv:2408.03314', 'arxiv:2501.00001'])
+  })
+
+  it('parses the arXiv Atom feed', () => {
+    const titles = parseArxivAtom(ATOM)
+    assert.equal(titles.get('2408.03314').title, 'The Llama 3 Herd of Models')
+    assert.equal(titles.get('2408.03314').author, 'Dubey')
+  })
+
+  it('scores validity and title match, excluding failed lookups', async () => {
+    const text = [
+      'arXiv:2408.03314 — The Llama 3 Herd of Models',
+      'doi:10.1038/s41586-020-2649-2 — unrelated context without the resolved words',
+      'arXiv:9999.99999 — a fabricated id',
+    ].join('\n')
+    const result = await scoreCitations(text, { fetchImpl: stub(), arxivGateMs: 0, crossrefGateMs: 0, retryMs: 0 })
+    assert.equal(result.citations, 3)
+    assert.equal(result.checked, 3)
+    assert.ok(Math.abs(result.valid - 2 / 3) < 1e-9)
+    assert.ok(Math.abs(result.title - 1 / 2) < 1e-9)
+    assert.deepEqual(result.unresolved, ['arxiv:9999.99999'])
+    assert.equal(result.title_mismatch.length, 1)
+    assert.equal(result.title_mismatch[0].id, 'doi:10.1038/s41586-020-2649-2')
+  })
+
+  it('accepts a first-author surname when the citation carries no title', async () => {
+    const text = 'Dubey et al. 2024, arXiv:2408.03314'
+    const result = await scoreCitations(text, { fetchImpl: stub(), arxivGateMs: 0, crossrefGateMs: 0, retryMs: 0 })
+    assert.equal(result.title, 1)
+  })
+
+  it('treats an arXiv outage as unverified, not invalid', async () => {
+    const result = await scoreCitations('arXiv:2408.03314', { fetchImpl: stub({ arxiv: 'fail' }), arxivGateMs: 0, arxivAttempts: 1, retryMs: 0 })
+    assert.equal(result.checked, 0)
+    assert.equal(result.valid, null)
+    assert.deepEqual(result.unresolved, [])
+  })
+
+  it('falls back to the DOI handle system for non-Crossref DOIs', async () => {
+    const result = await scoreCitations('doi:10.5281/zenodo.1234567', { fetchImpl: stub({ crossref: 'fail' }), arxivGateMs: 0, crossrefGateMs: 0 })
+    assert.equal(result.valid, 1)
+    assert.equal(result.title, null)
+  })
+
+  it('measures key-paper recall by id or normalized title', () => {
+    const question = {
+      key_papers: [
+        { ref: 'paper-a', title: 'The Llama 3 Herd of Models', ids: ['2408.03314'] },
+        { ref: 'paper-b', title: 'A foundation model for the natural sciences', ids: ['10.1038/s41586-020-2649-2'] },
+      ],
+    }
+    const hit = recallFor(question, 'see arXiv:2408.03314 and A Foundation Model for the Natural Sciences')
+    assert.equal(hit.recall, 1)
+    const miss = recallFor(question, 'only arXiv:2408.03314 is mentioned')
+    assert.equal(miss.recall, 0.5)
+    assert.deepEqual(miss.key_missing, ['paper-b'])
   })
 })
