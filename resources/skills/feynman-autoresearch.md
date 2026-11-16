@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=autoresearch and the user’s target as in
 
 Run the benchmark through the shell and record each result, its evidence, and the keep/revert decision in the session files.
 
-Session files: `<artifact-root>/experiments/autoresearch.md`, `<artifact-root>/experiments/autoresearch.sh`, `<artifact-root>/experiments/autoresearch.jsonl`
+Session files: `<artifact-root>/experiments/autoresearch.md`, `<artifact-root>/experiments/autoresearch.sh`, `<artifact-root>/experiments/autoresearch.jsonl`. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

@@ -52,6 +52,16 @@ test('T-PROMPT-02: deepresearch maps artifact paths under .feynman/', () => {
   assert.deepEqual(barePrefixes(text), [])
 })
 
+test('T-PROMPT-03a: every workflow brief maps every artifact path under .feynman/', () => {
+  for (const kind of Object.keys(FIXTURE_ARGS)) {
+    // summarize's fixture source is deliberately a `papers/...` path that must
+    // survive verbatim; use a neutral source to assert template mapping only.
+    const args = kind === 'summarize' ? parseSummarizeArgs('report.pdf') : FIXTURE_ARGS[kind]
+    const text = prompt(kind, args, { root: '.feynman' })
+    assert.deepEqual(barePrefixes(text), [], kind)
+  }
+})
+
 test('T-PROMPT-03: the log brief maps all four directories', () => {
   const text = prompt('log', '', { root: '.feynman' })
   for (const dir of ['outputs', 'papers', 'notes', 'experiments']) {

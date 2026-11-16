@@ -158,3 +158,16 @@ Phase A–F 已全部落地，验证按 `verification.md` 执行：
 
 - verification 的 T-CMD 矩阵仍有若干命令层行没有一一对应测试（多为既有命令的文案/分支）。
 - 真实模型下的 eval 行为（需凭据）；Windows 实机。
+
+---
+
+## 10. 迁移后回归审查（2026-11-16）
+
+在目录迁移实现上再走一遍“所有入口是否会写错根”：
+
+- **发现并修复**：`feynman_research_role` 与 `/feynman run` 直接把 `resources/roles.json` 的原始文本塞给模型，verifier 里的 `outputs/<slug>-source-check.md` 没有经过 layout 映射，`.feynman` 布局下会把子代理指向项目根。现在两处都按 session layout 调用 `mapArtifactPaths`，角色文本改为“读取工具返回的 artifact 路径”。
+- **persona 措辞**：明确“workflow brief 的路径已解析；skill 里的 `<artifact-root>`/`$ARTIFACT_ROOT` 是占位符，需从 marker 解析”，避免把占位符当字面路径。spec §9.6 同步。
+- **autoresearch skill** 补上 `<artifact-root>` 的定义，不再只给三个占位路径。
+- 新增回归测试：所有 12 个工作流的 `.feynman` 渲染无裸目录前缀；四个角色的内容都按 layout 映射；`source_check` 在 upstream 根布局写 `outputs/` 而不是 `.feynman/`。
+- `bun test` 205 pass / 0 fail；`node --test tests/*.test.js` 205 pass / 0 fail。
+- 已确认的迁移语义（非缺陷）：根布局的 `.feynman/project.json` 在 no-track 下不共享；旧项目根只留下 `experiments/autoresearch.*` 时不触发 legacy 检测，需手工选 `--root .`；`init` 不预建 `experiments/`（autoresearch 按需创建）。

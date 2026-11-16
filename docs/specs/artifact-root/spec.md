@@ -498,7 +498,7 @@ AGENTS.md exists and still describes the project-root layout. Merge .feynman/AGE
 ```
                 Artifacts:
                 - Deliver one canonical Markdown artifact per workflow unless the user asks for more. Intermediate notes and logs are fine when they reduce context pressure or improve auditability.
-                - Artifact paths in a workflow brief or skill are authoritative and already resolved; write them exactly as given. The project artifact root is recorded in `.feynman/project.json` and defaults to `.feynman/`; when no path is given, resolve `outputs/`, `papers/`, `notes/`, and `experiments/` under that root. Experiment code, session state, and logs live under the artifact root's `experiments/` directory like every other research artifact; keep the project root clean.
+                - Artifact paths in a workflow brief are authoritative and already resolved; write them exactly as given. Skills may spell paths as `<artifact-root>/…` or `$ARTIFACT_ROOT/…`; resolve the placeholder from the marker before use. The project artifact root is recorded in `.feynman/project.json` and defaults to `.feynman/`; when no path is given, resolve `outputs/`, `papers/`, `notes/`, and `experiments/` under that root. Experiment code, session state, and logs live under the artifact root's `experiments/` directory like every other research artifact; keep the project root clean.
                 - `grep` from the workspace root does not search hidden directories; pass the artifact root as `path` when searching for artifacts.
                 - Verify the artifact exists on disk before the final response. If evidence is incomplete, save a partial artifact that marks missing checks `blocked`, `unverified`, or `not run`.
 ```

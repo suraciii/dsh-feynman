@@ -191,6 +191,14 @@ test('all research skills load with bounded locators and all four roles have evi
   const rendered = roleTool.output.render({ role: 'writer' }, writer)[0].text
   assert.match(rendered, /Thinking: medium/)
   assert.match(rendered, /Retrieval is not allowed/)
+  const localized = createRoleTool(() => ({ root: '.feynman' }))
+  for (const role of ['researcher', 'writer', 'verifier', 'reviewer']) {
+    const value = await localized.execute({ role }, execution())
+    assert.deepEqual([...value.content.matchAll(/(?<![\w./-])(outputs|papers|notes|experiments)\//g)].map((match) => match[0]), [], role)
+  }
+  const verifier = await localized.execute({ role: 'verifier' }, execution())
+  assert.match(verifier.content, /\.feynman\/outputs\//)
+  assert.match(verifier.content, /path it returns/)
 })
 
 const webEvents = [
@@ -485,6 +493,23 @@ test('source_check gathers passages into an artifact without deciding support', 
 
     const filtered = filterSources([{ url: 'https://a.example.com/x' }, { url: 'https://b.other.net/y' }], ['example.com'])
     assert.deepEqual(filtered.map((s) => s.url), ['https://a.example.com/x'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('source_check writes project-root outputs in the upstream layout', async () => {
+  const { createSourceCheckTool } = await import('../lib/source-check.js')
+  const root = await mkdtemp(join(scratch, 'source-check-upstream-'))
+  try {
+    await mkdir(join(root, '.feynman'), { recursive: true })
+    await writeFile(join(root, '.feynman', 'project.json'), '{"version":1,"artifactRoot":"."}\n')
+    const runtime = {
+      schemas: () => [{ name: 'web_search', parameters: { properties: { queries: { type: 'array' } } } }],
+      execute: async () => ({ isError: false, content: [{ type: 'text', text: '' }], additionalContexts: [], value: { sources: [] } }),
+    }
+    const tool = createSourceCheckTool(runtime)
+    const result = await tool.execute({ claim: 'upstream layout claim' }, execution(root))
+    assert.equal(result.artifact, join(root, 'outputs', basename(result.artifact)))
+    assert.doesNotMatch(result.artifact, /\.feynman/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

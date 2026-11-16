@@ -61,6 +61,22 @@ test('/feynman run carries the role thinking level and tool policy', async () =>
   assert.doesNotMatch(text, /web_search|feynman_fetch_content/)
 })
 
+test('/feynman run resolves role artifact paths for the session layout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-feynman-run-layout-'))
+  await mkdir(join(root, '.feynman'), { recursive: true })
+  await writeFile(join(root, '.feynman', 'project.json'), '{"version":1,"artifactRoot":".feynman"}\n')
+  let handler
+  const messages = []
+  const agent = { session: { id: 'run-layout', header: { cwd: root } }, followup: (message) => messages.push(message), inject: (message) => messages.push(message) }
+  apply({ effect: (fn) => fn(), commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined }, {})
+  const result = await handler({ rawInput: 'run verifier check the draft', agent, attachments: [] })
+  assert.equal(result.kind, 'success')
+  const text = messages.at(-1).content.map((part) => part.text ?? '').join('\n')
+  assert.match(text, /\.feynman\/outputs\//)
+  assert.match(text, /path it returns/)
+  assert.doesNotMatch(text, /(?<![\w./-])outputs\//)
+})
+
 test('all session commands mapped', () => {
   for (const cmd of ['help', 'init', 'outputs', 'btw', 'thinking', 'keys', 'doctor', 'status']) {
     assert.ok(SESSION_COMMANDS[cmd], `missing /${cmd}`)

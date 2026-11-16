@@ -33,6 +33,7 @@ import {
   hasArtifacts,
   layoutLabel,
   legacyArtifacts,
+  mapArtifactPaths,
   MARKER_DIR,
   normalizeRoot,
   resolveLayout,
@@ -540,7 +541,7 @@ export function apply(ctx, config = {}) {
   ctx.inject?.(['tools'], (scope) => {
     state.toolRuntime = scope.tools
     state.research = mountResearchTools(scope, () => liveRefs(state))
-    scope.tools.register(createRoleTool())
+    scope.tools.register(createRoleTool((session) => layoutFor(ctx, session)))
     scope.tools.register(createFetchContentTool(scope.tools, { store: state.content }))
     scope.tools.register(createSearchContentTool({ store: state.content }))
     scope.tools.register(createSourceCheckTool(scope.tools, { store: state.content, resolveRoot: (session) => layoutFor(ctx, session) }))
@@ -574,7 +575,7 @@ export function apply(ctx, config = {}) {
       status: (inv, context) => statusHandler(inv, context, state),
       tools: () => {
         if (!state.toolRuntime) return err('The tools service is not mounted.')
-        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool(), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content }), createSourceCheckTool(undefined, { store: state.content }), createWebSearchTool({ getWeb: () => service(ctx, 'web'), store: state.content })]
+        const tools = state.toolRuntime.schemas?.() ?? [...(state.research?.tools ?? []), createRoleTool((session) => layoutFor(ctx, session)), createFetchContentTool(undefined, { store: state.content }), createSearchContentTool({ store: state.content }), createSourceCheckTool(undefined, { store: state.content }), createWebSearchTool({ getWeb: () => service(ctx, 'web'), store: state.content })]
         return { kind: 'success', text: tools.map((tool) => `${tool.name}: ${tool.description.split('\n')[0]}\n  Parameters: ${Object.keys(tool.parameters?.properties ?? {}).join(', ') || '(none)'}`).join('\n') || 'No tools are registered.' }
       },
       subagents: () => ({ kind: 'success', text: Object.entries(ROLES).map(([role, spec]) => `${role}: ${spec.description}`).join('\n') }),
@@ -583,7 +584,8 @@ export function apply(ctx, config = {}) {
         if (!Object.hasOwn(ROLES, role ?? '') || !task?.trim()) return err('Usage: /feynman run <researcher|reviewer|writer|verifier> <task>')
         const spec = ROLES[role]
         const policy = spec.tools === null ? 'All visible tools are allowed.' : `Allowed tools: ${spec.tools.join(', ')}. Do not use tools outside this list.`
-        inv.agent.followup(userMessage(inv, `Run the ${role} research role for this task: ${task}\n\nThinking level: ${spec.thinking}. ${policy}\n\n${spec.content}\n\nDelegate through the visible DSH subagent tool when available, including these role rules, the thinking level (as reasoning_effort only when the schema exposes it) and the task in its prompt; otherwise perform the role as lead. Use file outputs and verify completion before delivery.`))
+        const roleContent = mapArtifactPaths(spec.content, layoutFor(ctx, inv.agent.session).root)
+        inv.agent.followup(userMessage(inv, `Run the ${role} research role for this task: ${task}\n\nThinking level: ${spec.thinking}. ${policy}\n\n${roleContent}\n\nDelegate through the visible DSH subagent tool when available, including these role rules, the thinking level (as reasoning_effort only when the schema exposes it) and the task in its prompt; otherwise perform the role as lead. Use file outputs and verify completion before delivery.`))
         return { kind: 'success', text: `${role} task queued as the next turn.` }
       },
       alpha: async (inv) => {
