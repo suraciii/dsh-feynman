@@ -7,4 +7,4 @@ description: Write a durable session log capturing completed work, findings, ope
 
 Load `feynman_workflow` with workflow=log and the user’s focus as input, then perform its instructions. The human can also use `/feynman log [focus]`, which queues the same brief. The slash command expands the full workflow instructions in the active session; do not try to read a relative prompt-template path from the installed skill directory.
 
-Output: session log in `notes/session-logs/`.
+Output: session log in `<artifact-root>/notes/session-logs/`. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

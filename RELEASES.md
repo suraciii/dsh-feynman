@@ -1,5 +1,10 @@
-## Unreleased
+## v0.25.0
 
+- Add a per-project artifact root: `outputs/`, `papers/`, `notes/`, and `experiments/` move under `.feynman/` by default, recorded in `.feynman/project.json`, so the plugin can run in a code repository without scattering research directories at its root. A project that already has the upstream layout keeps it; existing artifacts are never moved or overwritten.
+- Add `/feynman init [--root <. | .feynman>] [--track | --no-track]`: the default hides the artifact root behind a managed `.gitignore` block (`git clean -xdf` deletes ignored artifacts), `--track` commits them, and `--root .` keeps the upstream layout. Re-running is idempotent, and a non-empty project-owned directory is never hidden.
+- Render workflow briefs, skills, and the persona against the resolved layout; artifact paths in prompts are concrete (`.feynman/outputs/<slug>.md`) and `grep` guidance points at the hidden root. User input is never rewritten.
+- Anchor autoresearch session files under `experiments/` (`<root>/experiments/autoresearch.{md,sh,jsonl}`). Old files left at the project root are not auto-detected as a resumable session; move them into `experiments/` to resume.
+- Evals gain `--layout feynman|upstream`; scoring resolves the layout from the marker and still scores legacy root-layout runs.
 - Add `feynman_web_search`: `queries`, `numResults` 1–20, `recencyFilter`, `domainFilter` include/exclude, and `includeContent` over the DSH web seam. Filters are applied to returned sources (the host tool cannot filter provider-side), undated sources are kept and marked, and included pages are stored for `feynman_search_content`. Host `web_search` remains for plain lookups.
 - Align deepresearch/lit/compare artifact names with upstream: `outputs/<slug>.md` and `outputs/<slug>.provenance.md` for deepresearch/lit, and `outputs/<slug>-comparison.md` for compare. The eval scorer still accepts the legacy `-brief.md`/`-lit-review.md` suffixes for older runs.
 - Make `/feynman thinking` a real setting: it records the level in DSH model selection (validated against the route's advertised efforts when the adapter exposes them) instead of injecting a preference note, matching upstream's Pi `/thinking` behavior.

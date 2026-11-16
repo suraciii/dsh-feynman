@@ -251,6 +251,19 @@ test('model workflow loading supplies complete protocols and validates summarize
   assert.match(log.instructions, /notes\/` as markdown with a date-oriented filename/)
 })
 
+test('workflow loading follows the resolved artifact root', async () => {
+  const mapped = createWorkflowTool(refs, () => ({ root: '.feynman', detail: 'legacy layout: outputs/.plans' }))
+  const result = await mapped.execute({ workflow: 'review', input: 'arxiv:2401.12345' }, execution('/tmp/fixture'))
+  assert.match(result.instructions, /^Artifact root: \.feynman\/ \(project layout\)\./)
+  assert.match(result.instructions, /Note: legacy layout: outputs\/\.plans/)
+  assert.match(result.instructions, /\.feynman\/outputs\/\.drafts\/2401-12345-review-evidence\.md/)
+  assert.match(result.instructions, /Create `\.feynman\/outputs\/\.plans`, `\.feynman\/outputs\/\.drafts`, and `\.feynman\/outputs`\./)
+
+  const upstream = createWorkflowTool(refs, () => ({ root: '' }))
+  const plain = await upstream.execute({ workflow: 'review', input: 'arxiv:2401.12345' }, execution('/tmp/fixture'))
+  assert.doesNotMatch(plain.instructions, /\.feynman/)
+})
+
 test('research tools mount, execute, and unload through the real DSH tool runtime', async () => {
   const ctx = new Context()
   const sections = new Set()
@@ -328,6 +341,7 @@ test('fetch reads GitHub sources, stores full text, and search_content pages and
       assert.equal(result.items[0].kind, 'github-repo')
       assert.match(result.items[0].text, /scaling laws/)
       assert.ok(result.items[0].savedPath.startsWith(join(root, '.feynman', 'fetch')))
+      assert.match(result.note, /\.feynman\/fetch\//)
       assert.equal(await readFile(result.items[0].savedPath, 'utf8'), body)
 
       const search = createSearchContentTool({ store })
@@ -344,6 +358,27 @@ test('fetch reads GitHub sources, stores full text, and search_content pages and
       assert.equal(latest.text, body.slice(0, 20))
     } finally { await rm(root, { recursive: true, force: true }) }
   } finally { globalThis.fetch = original }
+})
+
+test('fetch refuses to save through a symlink that escapes the workspace', async () => {
+  const original = globalThis.fetch
+  const root = await mkdtemp(join(scratch, 'fetch-link-'))
+  const outside = await mkdtemp(join(scratch, 'fetch-out-'))
+  try {
+    await symlink(outside, join(root, '.feynman'))
+  } catch {
+    return // symlinks unavailable
+  }
+  try {
+    globalThis.fetch = async () => new Response('%PDF-1.4', { headers: { 'content-type': 'application/pdf' } })
+    const { createFetchContentTool } = await import('../lib/fetch-content.js')
+    const tool = createFetchContentTool({ schemas: () => [], execute: async () => { throw new Error('host tools are not needed here') } }, { lookup: publicLookup })
+    const result = await tool.execute({ url: 'https://example.com/x.pdf' }, execution(root))
+    assert.equal(result.ok, 0, JSON.stringify(result))
+    assert.match(String(result.items[0].error), /symlink outside the workspace/)
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('fetch parses PDFs through document_parse and falls back to the host reader for HTML', async () => {
@@ -434,6 +469,8 @@ test('source_check gathers passages into an artifact without deciding support', 
     assert.deepEqual(calls.find((call) => call.name === 'feynman_fetch_content').arguments.urls, ['https://docs.example.com/api', 'https://blog.example.com/post'])
     assert.match(result.sources[0].passages[0].text, /chunks as they are produced/)
     assert.match(basename(result.artifact), /^the-api-supports-streaming-responses-[0-9a-f]{6}-source-check\.md$/)
+    assert.equal(result.artifact, join(root, '.feynman', 'outputs', basename(result.artifact)), 'default layout writes under .feynman/')
+    assert.match(tool.description, /project artifact root/)
     const markdown = await readFile(result.artifact, 'utf8')
     assert.match(markdown, /Status: \*\*unclassified\*\*/)
     assert.match(markdown, /does not decide whether the claim is supported/)

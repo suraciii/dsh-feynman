@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=deepresearch and the user’s target as in
 
 Agents used: `researcher`, `verifier`, `reviewer`
 
-Output: cited brief in `outputs/` with `.provenance.md` sidecar.
+Output: cited brief in `<artifact-root>/outputs/` with `.provenance.md` sidecar. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

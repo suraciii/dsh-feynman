@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=draft and the user’s target as input, th
 
 Agents used: `writer`, `verifier`
 
-Output: paper draft in `papers/`.
+Output: paper draft in `<artifact-root>/papers/`. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

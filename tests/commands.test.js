@@ -1,8 +1,8 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { slugify, stripArxivPrefix, parseLoopArgs, parseSummarizeArgs, loopFollowupPrompt, buildPrompt, WORKFLOWS, SESSION_COMMANDS, THINKING_LEVELS } from '../prompts.js'
 import { apply, thinkingHandler } from '../index.js'
@@ -593,7 +593,11 @@ test('real Cordis composition mounts the plugin and tears it down', async () => 
 // build on this host). Tests must survive a loaded runner, so they gate on
 // retired CPU time and on the frozen prompt text instead of wall clock.
 
-/** The brief args the digest was reviewed against; changing one changes the digest. */
+/**
+ * The brief args the digest was reviewed against; changing one changes the digest.
+ * The hash itself was updated deliberately when the autoresearch brief started
+ * anchoring its session files under `experiments/` (artifact-root layout).
+ */
 const DIGEST_ARGS = {
   deepresearch: 'Quantum error correction — fault tolerance\nwith unicode: café, 東京, emoji 🚀',
   lit: 'arxiv:2301.00001 diffusion models',
@@ -619,7 +623,7 @@ test('every workflow brief is byte-identical to the reviewed text', () => {
   digest.update(loopFollowupPrompt('paper X', 2, 2))
   assert.equal(
     digest.digest('hex'),
-    '368422305871b8970b889b640627a9afecf4b0d997c7f40849b0d87028e2a278',
+    '1b0a661ab42605cdf960f384bc3049b20a17bfe25bb68cafee3eb3dc4d112d57',
     'prompt text changed: update the digest deliberately',
   )
 })
@@ -712,28 +716,94 @@ test('/feynman log queues the upstream session-log brief with and without a focu
   assert.equal(queued.at(-1).content.length, 2)
 })
 
-// `/feynman init` writes the upstream templates itself and keeps existing files.
-test('init scaffolds AGENTS.md and session-log folders without a model turn', async () => {
+// `/feynman init` writes the templates itself, records the artifact root, and keeps existing files.
+test('init scaffolds the artifact root and keeps existing files without a model turn', async () => {
   let handler
   const followups = []
   apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
-  const scratch = fileURLToPath(new URL('../.scratch/', import.meta.url))
-  const root = await mkdtemp(join(scratch, 'init-'))
+  const root = await mkdtemp(join(tmpdir(), 'dsh-feynman-init-cmd-'))
   const invocation = { rawInput: 'init', agent: { session: { id: 's', header: { cwd: root } }, followup: (message) => followups.push(message), inject: () => {} }, attachments: [] }
   const first = await handler(invocation)
   assert.equal(first.kind, 'success', first.text)
-  assert.match(first.text, /created: AGENTS\.md, notes\/session-logs\/README\.md/)
+  assert.match(first.text, /artifact root \.feynman\/ \(source: default\)/)
+  assert.match(first.text, /created: .*AGENTS\.md/)
+  assert.match(first.text, /created: .*\.feynman\/notes\/session-logs\/README\.md/)
   const agents = await readFile(join(root, 'AGENTS.md'), 'utf8')
   assert.match(agents, /## Verification Gates/)
-  assert.match(await readFile(join(root, 'notes', 'session-logs', 'README.md'), 'utf8'), /Use `\/log`/)
+  assert.match(agents, /\.feynman\/outputs\//)
+  assert.doesNotMatch(agents, /(?<![\w./-])outputs\//)
+  assert.match(await readFile(join(root, '.feynman', 'notes', 'session-logs', 'README.md'), 'utf8'), /Use `\/log`/)
   assert.equal(followups.length, 0, 'init must not queue a model turn')
 
-  await writeFile(join(root, 'AGENTS.md'), '# my own guide\n')
   const second = await handler(invocation)
-  assert.match(second.text, /created: nothing; kept existing: AGENTS\.md, notes\/session-logs\/README\.md/)
+  assert.match(second.text, /created: nothing/)
+  assert.match(second.text, /kept: .*AGENTS\.md/)
+  await writeFile(join(root, 'AGENTS.md'), '# my own guide\n')
+  const third = await handler(invocation)
   assert.equal(await readFile(join(root, 'AGENTS.md'), 'utf8'), '# my own guide\n')
   assert.equal((await handler({ ...invocation, rawInput: 'init extra' })).kind, 'error')
+  assert.equal((await handler({ ...invocation, rawInput: 'init --root cache' })).kind, 'error')
   assert.equal((await handler({ ...invocation, agent: { session: { id: 's' } } })).kind, 'error')
+
+  const broken = await mkdtemp(join(tmpdir(), 'dsh-feynman-init-broken-'))
+  await mkdir(join(broken, 'AGENTS.md'))
+  const failed = await handler({ rawInput: 'init', agent: { session: { id: 's', header: { cwd: broken } }, followup: () => {}, inject: () => {} }, attachments: [] })
+  assert.equal(failed.kind, 'error')
+  assert.match(failed.text, /created before the error: .*\.feynman\//)
+})
+
+// The queued brief and the reply both name the project artifact root.
+test('workflow briefs and replies follow the session artifact root', async () => {
+  let handler
+  const queued = []
+  apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
+  const root = await mkdtemp(join(tmpdir(), 'dsh-feynman-brief-'))
+  const agent = { session: { id: 's', header: { cwd: root } }, followup: (message) => queued.push(message), inject: () => {} }
+  const result = await handler({ rawInput: 'deepresearch a topic', agent, attachments: [] })
+  assert.equal(result.kind, 'success', result.text)
+  assert.match(result.text, /Output lands in \.feynman\/outputs\/\./)
+  const brief = queued.at(-1).content.at(-1).text
+  assert.match(brief, /Artifact root: \.feynman\/ \(project layout\)\./)
+  assert.match(brief, /\.feynman\/outputs\//)
+  assert.doesNotMatch(brief, /(?<![\w./-])outputs\//)
+})
+
+test('a session without a workspace keeps the upstream paths', async () => {
+  let handler
+  const queued = []
+  apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
+  const agent = { session: { id: 's' }, followup: (message) => queued.push(message), inject: () => {} }
+  const result = await handler({ rawInput: 'lit a topic', agent, attachments: [] })
+  assert.equal(result.kind, 'success', result.text)
+  assert.match(result.text, /Output lands in outputs\/\./)
+  assert.doesNotMatch(queued.at(-1).content.at(-1).text, /Artifact root:/)
+})
+
+test('the outputs listing points at the artifact root and the other layout', async () => {
+  let handler
+  const queued = []
+  apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
+  const root = await mkdtemp(join(tmpdir(), 'dsh-feynman-outputs-'))
+  const agent = { session: { id: 's', header: { cwd: root } }, followup: (message) => queued.push(message), inject: () => {} }
+  await handler({ rawInput: 'outputs', agent, attachments: [] })
+  const text = queued.at(-1).content.at(-1).text
+  assert.match(text, /\.feynman\/outputs\//)
+  assert.match(text, /project-root experiments\/ only when it contains autoresearch\.\*/)
+  assert.match(text, /pass the artifact root as its path/)
+})
+
+// `--root .` keeps the upstream layout; the marker makes it survive sessions.
+test('init --root . writes the upstream layout and records it in the marker', async () => {
+  let handler
+  apply({ effect: (fn) => { fn(); return () => {} }, commands: { register: (definition) => { handler = definition.handler; return () => {} } }, on: () => () => {}, get: () => undefined, inject: () => {} }, {})
+  const root = await mkdtemp(join(tmpdir(), 'dsh-feynman-init-root-'))
+  const invocation = { rawInput: 'init --root .', agent: { session: { id: 's', header: { cwd: root } }, followup: () => {}, inject: () => {} }, attachments: [] }
+  const result = await handler(invocation)
+  assert.equal(result.kind, 'success', result.text)
+  assert.match(result.text, /artifact root \. \(source: flag\)/)
+  assert.equal(JSON.parse(await readFile(join(root, '.feynman', 'project.json'), 'utf8')).artifactRoot, '.')
+  assert.equal((await stat(join(root, 'outputs', '.plans'))).isDirectory(), true)
+  assert.equal((await stat(join(root, 'notes', 'session-logs'))).isDirectory(), true)
 })
 
 // Pandoc powers the preview skill; doctor reports it instead of assuming it.
@@ -743,4 +813,6 @@ test('doctor reports pandoc availability', async () => {
   const result = await handler({ rawInput: 'doctor', agent: { session: { id: 's' } }, attachments: [] })
   assert.equal(result.kind, 'success')
   assert.match(result.text, /- Pandoc \(preview\): /)
+  assert.match(result.text, /- Artifact root: \. \(source: default\)/)
+  assert.match(result.text, /- Layout marker: missing/)
 })

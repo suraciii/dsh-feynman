@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=recipe and the user’s target as input, t
 
 Agents used: `researcher`, optionally `verifier`
 
-Output: ranked recipe brief in `outputs/` with dataset, method, code, and source provenance.
+Output: ranked recipe brief in `<artifact-root>/outputs/` with dataset, method, code, and source provenance. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

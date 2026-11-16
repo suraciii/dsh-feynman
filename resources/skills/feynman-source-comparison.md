@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=compare and the user’s target as input, 
 
 Agents used: `researcher`, `verifier`
 
-Output: comparison matrix in `outputs/`.
+Output: comparison matrix in `<artifact-root>/outputs/`. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

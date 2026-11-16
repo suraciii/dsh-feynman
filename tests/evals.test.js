@@ -6,6 +6,8 @@ import assert from 'node:assert/strict'
 import { after, describe, it } from 'node:test'
 import { countIdentifiers, countProvenanceFields, countTodos, extractSources, extractIds, findFinal, findProvenance, isBlocked, scoreWorkdir } from '../evals/score.mjs'
 import { parseArxivAtom, recallFor, scoreCitations } from '../evals/resolve.mjs'
+import { buildTask, writeLayoutMarker } from '../evals/run.mjs'
+import { MARKER_DIR, MARKER_FILE } from '../lib/project-paths.js'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const roots = []
@@ -79,6 +81,7 @@ describe('scoreWorkdir', () => {
     const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'lit' })
     assert.equal(row.final, 'outputs/test-topic.md')
     assert.equal(row.provenance, 'outputs/test-topic.provenance.md')
+    assert.equal(row.layout, 'upstream', 'outputs/.plans is legacy evidence')
     assert.equal(row.done, 1)
     assert.equal(row.plan, 1)
     assert.equal(row.drafts, 1)
@@ -112,6 +115,60 @@ describe('scoreWorkdir', () => {
     const fallback = scoreWorkdir({ workdir: upstream, slug: 'test-topic', workflow: 'lit' })
     assert.equal(fallback.final, 'papers/test-topic.md')
     assert.equal(fallback.done, 1)
+  })
+
+  it('scores artifacts under the .feynman layout when the marker says so', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-feynman-evals-feynman-'))
+    roots.push(root)
+    mkdirSync(join(root, MARKER_DIR, 'outputs/.plans'), { recursive: true })
+    mkdirSync(join(root, MARKER_DIR, 'outputs/.drafts'), { recursive: true })
+    writeFileSync(join(root, MARKER_DIR, MARKER_FILE), '{"version":1,"artifactRoot":".feynman"}\n')
+    writeFileSync(join(root, MARKER_DIR, 'outputs/test-topic.md'), FINAL)
+    writeFileSync(join(root, MARKER_DIR, 'outputs/test-topic.provenance.md'), PROVENANCE)
+    writeFileSync(join(root, MARKER_DIR, 'outputs/.plans/test-topic.md'), '# Plan\n')
+    writeFileSync(join(root, MARKER_DIR, 'outputs/.drafts/test-topic-research-direct.md'), '# Notes\n')
+    const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'lit' })
+    assert.equal(row.layout, 'feynman')
+    assert.equal(row.artifact_root, '.feynman')
+    assert.equal(row.final, '.feynman/outputs/test-topic.md')
+    assert.equal(row.provenance, '.feynman/outputs/test-topic.provenance.md')
+    assert.equal(row.done, 1)
+    assert.equal(row.plan, 1)
+    assert.equal(row.drafts, 1)
+  })
+
+  it('does not score root-layout artifacts when the marker says .feynman', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-feynman-evals-wrong-root-'))
+    roots.push(root)
+    mkdirSync(join(root, MARKER_DIR, 'outputs'), { recursive: true })
+    writeFileSync(join(root, MARKER_DIR, MARKER_FILE), '{"version":1,"artifactRoot":".feynman"}\n')
+    mkdirSync(join(root, 'outputs'), { recursive: true })
+    writeFileSync(join(root, 'outputs', 'test-topic.md'), FINAL)
+    writeFileSync(join(root, 'outputs', 'test-topic.provenance.md'), PROVENANCE)
+    const row = scoreWorkdir({ workdir: root, slug: 'test-topic', workflow: 'lit' })
+    assert.equal(row.layout, 'feynman')
+    assert.equal(row.final, null)
+    assert.equal(row.done, 0)
+  })
+
+  it('buildTask writes the marker for both layouts', () => {
+    const feynman = mkdtempSync(join(tmpdir(), 'dsh-feynman-task-feynman-'))
+    roots.push(feynman)
+    const task = buildTask('lit', 'test topic')
+    assert.equal(task.root, '.feynman')
+    assert.match(task.task, /\.feynman\/outputs\/test-topic/)
+    assert.match(task.task, /^Artifact root: \.feynman\//)
+    writeLayoutMarker(feynman, task.root)
+    assert.equal(JSON.parse(readFileSync(join(feynman, MARKER_DIR, MARKER_FILE), 'utf8')).artifactRoot, '.feynman')
+
+    const upstream = mkdtempSync(join(tmpdir(), 'dsh-feynman-task-upstream-'))
+    roots.push(upstream)
+    const legacy = buildTask('lit', 'test topic', 'upstream')
+    assert.equal(legacy.root, '')
+    assert.doesNotMatch(legacy.task, /\.feynman/)
+    assert.doesNotMatch(legacy.task, /Artifact root:/)
+    writeLayoutMarker(upstream, legacy.root)
+    assert.equal(JSON.parse(readFileSync(join(upstream, MARKER_DIR, MARKER_FILE), 'utf8')).artifactRoot, '.')
   })
 
   it('reports done=0 when the provenance sidecar is missing', () => {
@@ -166,7 +223,7 @@ process.stdin.on('end', () => {
     chmodSync(bin, 0o755)
     const questions = join(root, 'questions.jsonl')
     writeFileSync(questions, '{"id":"qx","field":"test","question":"demo topic","key_papers":[],"source":"fixture"}\n')
-    execFileSync(process.execPath, [join(ROOT, 'evals/run.mjs'), '--questions', questions, '--model', 'stub', '--workflow', 'lit', '--work-root', join(root, 'run'), '--results-dir', join(root, 'results'), '--no-resolve'], {
+    execFileSync(process.execPath, [join(ROOT, 'evals/run.mjs'), '--questions', questions, '--model', 'stub', '--workflow', 'lit', '--layout', 'upstream', '--work-root', join(root, 'run'), '--results-dir', join(root, 'results'), '--no-resolve'], {
       env: { ...process.env, DSH_BIN: bin },
       stdio: 'pipe',
     })
@@ -179,6 +236,43 @@ process.stdin.on('end', () => {
     assert.equal(row.provenance_fields, 8)
     assert.equal(row.cites, 1)
     assert.equal(row.exit_code, 0)
+    assert.equal(row.layout, 'upstream')
+  })
+
+  it('runs the .feynman layout end to end through the marker', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { chmodSync } = await import('node:fs')
+    const root = fixture()
+    const bin = join(root, 'fake-dsh-marker.mjs')
+    writeFileSync(bin, String.raw`#!/usr/bin/env node
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+process.stdin.resume()
+process.stdin.on('end', () => {
+  const marker = JSON.parse(readFileSync(join(process.cwd(), '.feynman', 'project.json'), 'utf8'))
+  const base = marker.artifactRoot === '.' ? '' : marker.artifactRoot
+  const outputs = join(process.cwd(), base, 'outputs')
+  mkdirSync(join(outputs, '.plans'), { recursive: true })
+  writeFileSync(join(outputs, '.plans', 'demo-topic.md'), '# Plan\n')
+  writeFileSync(join(outputs, 'demo-topic.md'), '# demo\n\narXiv:2408.03314\n\n## Sources\n\n1. https://arxiv.org/abs/2408.03314\n')
+  writeFileSync(join(outputs, 'demo-topic.provenance.md'), '# Provenance\n\n- **Date:** 2026-10-28\n- **Rounds:** 1\n- **Sources consulted:** 1\n- **Sources accepted:** 1\n- **Sources rejected:** 0\n- **Verification:** PASS\n- **Plan:** outputs/.plans/demo-topic.md\n- **Research files:** none\n')
+  process.stdout.write(JSON.stringify({ type: 'session', sessionId: 'stub' }) + '\n')
+  process.stdout.write(JSON.stringify({ type: 'final', reason: { kind: 'stop' }, text: 'ok' }) + '\n')
+})
+`)
+    chmodSync(bin, 0o755)
+    const questions = join(root, 'questions.jsonl')
+    writeFileSync(questions, '{"id":"qx","field":"test","question":"demo topic","key_papers":[],"source":"fixture"}\n')
+    execFileSync(process.execPath, [join(ROOT, 'evals/run.mjs'), '--questions', questions, '--model', 'stub', '--workflow', 'lit', '--work-root', join(root, 'run'), '--results-dir', join(root, 'results'), '--no-resolve'], {
+      env: { ...process.env, DSH_BIN: bin },
+      stdio: 'pipe',
+    })
+    const files = readdirSync(join(root, 'results')).filter(name => name.endsWith('.jsonl'))
+    const row = JSON.parse(readFileSync(join(root, 'results', files[0]), 'utf8').trim())
+    assert.equal(row.layout, 'feynman')
+    assert.equal(row.done, 1, JSON.stringify(row))
+    assert.equal(row.final, '.feynman/outputs/demo-topic.md')
+    assert.equal(row.plan, 1)
   })
 })
 

@@ -11,6 +11,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
+import { artifactDir, resolveLayout } from '../lib/project-paths.js'
+
 /** Provenance labels the deepresearch/lit prompts require. Order is display order. */
 export const PROVENANCE_FIELDS = [
   'Date',
@@ -23,10 +25,10 @@ export const PROVENANCE_FIELDS = [
   'Research files',
 ]
 
-/** Final-artifact names by workflow, most specific first, then the upstream fallback. */
+/** Final-artifact names by workflow, relative to the layout's `outputs/` directory. */
 const FINAL_CANDIDATES = {
-  lit: slug => [`outputs/${slug}.md`, `outputs/${slug}-lit-review.md`],
-  deepresearch: slug => [`outputs/${slug}.md`, `outputs/${slug}-brief.md`],
+  lit: slug => [`${slug}.md`, `${slug}-lit-review.md`],
+  deepresearch: slug => [`${slug}.md`, `${slug}-brief.md`],
 }
 
 function isFile(path) {
@@ -56,12 +58,14 @@ function listMarkdown(dir) {
  * @param workflow - `lit` or `deepresearch`.
  * @returns the path relative to `workdir`, or undefined.
  */
-export function findFinal(workdir, slug, workflow) {
+export function findFinal(workdir, slug, workflow, root = resolveLayout(workdir).root) {
+  const outputs = artifactDir(root, 'outputs')
+  const papers = artifactDir(root, 'papers')
   const declared = (FINAL_CANDIDATES[workflow] ?? FINAL_CANDIDATES.lit)(slug)
-  for (const candidate of [...declared, `papers/${slug}.md`]) {
-    if (isFile(join(workdir, candidate))) return candidate
+  for (const name of [...declared.map(entry => `${outputs}/${entry}`), `${papers}/${slug}.md`]) {
+    if (isFile(join(workdir, name))) return name
   }
-  for (const dir of ['outputs', 'papers']) {
+  for (const dir of [outputs, papers]) {
     for (const name of listMarkdown(join(workdir, dir))) {
       if (name.endsWith('.provenance.md') || name.endsWith('-source-check.md')) continue
       const stem = name.slice(0, -3)
@@ -78,19 +82,21 @@ export function findFinal(workdir, slug, workflow) {
  * @param slug - the run slug.
  * @returns the path relative to `workdir`, or undefined.
  */
-export function findProvenance(workdir, finalPath, slug) {
+export function findProvenance(workdir, finalPath, slug, root = resolveLayout(workdir).root) {
+  const outputs = artifactDir(root, 'outputs')
+  const papers = artifactDir(root, 'papers')
   const candidates = []
   if (finalPath !== undefined) candidates.push(finalPath.replace(/\.md$/, '.provenance.md'))
   candidates.push(
-    `outputs/${slug}.provenance.md`,
-    `outputs/${slug}-brief.provenance.md`,
-    `outputs/${slug}-lit-review.provenance.md`,
-    `papers/${slug}.provenance.md`,
+    `${outputs}/${slug}.provenance.md`,
+    `${outputs}/${slug}-brief.provenance.md`,
+    `${outputs}/${slug}-lit-review.provenance.md`,
+    `${papers}/${slug}.provenance.md`,
   )
   for (const candidate of candidates) {
     if (isFile(join(workdir, candidate))) return candidate
   }
-  for (const dir of ['outputs', 'papers']) {
+  for (const dir of [outputs, papers]) {
     for (const name of listMarkdown(join(workdir, dir))) {
       if (!name.endsWith('.provenance.md')) continue
       const stem = name.slice(0, -'.provenance.md'.length)
@@ -186,25 +192,29 @@ export function isBlocked(text) {
  * @returns a flat row suitable for JSONL.
  */
 export function scoreWorkdir({ workdir, slug, workflow }) {
-  const final = findFinal(workdir, slug, workflow)
-  const provenance = final === undefined ? findProvenance(workdir, undefined, slug) : findProvenance(workdir, final, slug)
+  const layout = resolveLayout(workdir)
+  const root = layout.root
+  const final = findFinal(workdir, slug, workflow, root)
+  const provenance = final === undefined ? findProvenance(workdir, undefined, slug, root) : findProvenance(workdir, final, slug, root)
   const finalText = final === undefined ? '' : readFileSync(join(workdir, final), 'utf8')
   const provenanceText = provenance === undefined ? '' : readFileSync(join(workdir, provenance), 'utf8')
   const sources = extractSources(finalText)
   const ids = countIdentifiers(finalText)
   const drafts = (() => {
     try {
-      return readdirSync(join(workdir, 'outputs/.drafts')).filter(name => name.startsWith(`${slug}-`)).length
+      return readdirSync(join(workdir, artifactDir(root, 'outputs', '.drafts'))).filter(name => name.startsWith(`${slug}-`)).length
     } catch {
       return 0
     }
   })()
   return {
     slug,
+    layout: root === '' ? 'upstream' : 'feynman',
+    artifact_root: root === '' ? '.' : root,
     final: final ?? null,
     provenance: provenance ?? null,
     done: final !== undefined && provenance !== undefined ? 1 : 0,
-    plan: isFile(join(workdir, `outputs/.plans/${slug}.md`)) ? 1 : 0,
+    plan: isFile(join(workdir, artifactDir(root, 'outputs', '.plans', `${slug}.md`))) ? 1 : 0,
     drafts,
     provenance_fields: countProvenanceFields(provenanceText),
     sources: sources.count,

@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=review and the user’s target as input, t
 
 Agents used: `researcher`, `reviewer`
 
-Output: structured review in `outputs/`.
+Output: structured review in `<artifact-root>/outputs/`. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

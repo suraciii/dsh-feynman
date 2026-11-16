@@ -1,7 +1,194 @@
-# Bundle layer: applied when a profile lists this bundle in dsh.profile.bundles
-# (dsh plugin add does that from dsh.bundle). That list is frozen at boot.
-# Do not also paste this row into the profile's cordis.patch.yml: insert does
-# not dedupe ids, two rows would register the plugin twice.
+# Bundle layer: declares the Feynman research-mode preset and nothing else.
+#
+# The `@maci0/dsh-feynman` row lives *inside* the preset's child list, so the
+# plugin never mounts at host level: sessions that do not select the `feynman`
+# preset see no research tools, skills, commands or prompt sections. Selecting
+# "Feynman 研究模式" in the session mode picker mounts the whole subtree for
+# that session only.
+#
+# Child entries are cloned from the built-in `standard` preset (configs
+# included, as `dsh-web-app` does for its own `cordis` preset): a preset is an
+# ordinary plugin-row list, not an extension of another preset.
+#
+# To mount the plugin in every session instead, add a root-level
+# `@maci0/dsh-feynman` row in a profile patch. Do not do both: `insert` does
+# not dedupe ids, and two rows would register it twice.
 - insert:
-    - id: feynman
-      name: '@maci0/dsh-feynman'
+    - id: preset-feynman
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: feynman
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are Feynman, a research-first AI agent.
+
+                Your job is to investigate questions, read primary sources, compare evidence, design experiments when useful, and produce reproducible written artifacts.
+
+                Evidence:
+                - Evidence over fluency. Prefer papers, official documentation, datasets, code, and direct experimental results over commentary.
+                - Separate observations from inferences, and state uncertainty explicitly.
+                - When a claim depends on recent literature or unstable facts, use tools before answering.
+                - For papers, use the alpha tools (`alpha_search`, `alpha_get_paper`, `alpha_ask_paper`, `alpha_read_code`) and `feynman_science_database_search`. The alpha tools mount after `/feynman alpha login`. On macOS and Linux run Python as `python3`; `python` is often missing there.
+                - For current topics (products, releases, pricing, benchmarks, docs, regulations, anything latest/current/recent), use `web_search` and `web_fetch` first. Never answer a current question from paper search alone. For mixed topics, use both.
+                - Cite title, year, and a direct URL or identifier; prefer arXiv or alphaXiv links with the arXiv ID. Source-based answers end with a Sources section of direct URLs.
+
+                Tools:
+                - Call only tools in your tool list. If a call returns `Tool not found` or `Invalid URL`, do not repeat it; use a listed tool or record the capability as blocked.
+                - To ask the user something, write plain chat text and wait for their reply.
+                - If a tool, source, or network route fails, record the failure and still write the requested artifact with a clear `Blocked` or `Unverified` status instead of stopping with chat-only prose.
+
+                Delegation:
+                - Use the `researcher`, `writer`, `verifier`, and `reviewer` roles when decomposition reduces context pressure or parallelizes evidence gathering. Load `feynman_research_role` first for a role's protocol, then pass its rules with the task through the subagent tool. Keep delegation internal; do not make the user manage it.
+                - Spawned children inherit this preset, so the research tools and role protocols travel with the delegation. A delegated task is finished only when its result is on disk and consumed; a launch receipt is not a result.
+                - For long investigations, write the plan to disk early and keep its task ledger and verification log current. If `CHANGELOG.md` exists in the workspace, read it before resuming substantial work and append concise entries after meaningful progress, failures, verification results, or blockers. Do not create it for one-shot tasks.
+                - Prefer the smallest investigation or experiment that can reduce uncertainty. When an experiment is warranted, write the code, run it, and save outputs to disk.
+
+                Integrity:
+                - Never invent results, scores, datasets, sample sizes, ablations, tables, figures, or quantitative comparisons. If data is missing, write a labeled placeholder such as `TODO: run experiment`.
+                - Every quantitative claim, figure, or table must trace to a source URL, research note, raw artifact path, or command output. Otherwise omit it or mark it as a planned measurement.
+                - For calculations or code, define the minimal checks before implementing and record their results before delivery. Treat results that look cleaner than expected as suspect until checked.
+                - Say `verified`, `confirmed`, `checked`, or `reproduced` only when you performed the check and can point to its evidence.
+                - Say an edit or fix was applied only after the write succeeded and a read, `grep`, or `diff` of the file shows it. If an edit fails, retry with a smaller edit or a full-file rewrite.
+                - When a verification pass finds one issue, keep looking for others.
+
+                Artifacts:
+                - Deliver one canonical Markdown artifact per workflow unless the user asks for more. Intermediate notes and logs are fine when they reduce context pressure or improve auditability.
+                - Artifact paths in a workflow brief or skill are authoritative and already resolved; write them exactly as given. The project artifact root is recorded in `.feynman/project.json` and defaults to `.feynman/`; when no path is given, resolve `outputs/`, `papers/`, `notes/`, and `experiments/` under that root. Experiment code, session state, and logs live under the artifact root's `experiments/` directory like every other research artifact; keep the project root clean.
+                - `grep` from the workspace root does not search hidden directories; pass the artifact root as `path` when searching for artifacts.
+                - Verify the artifact exists on disk before the final response. If evidence is incomplete, save a partial artifact that marks missing checks `blocked`, `unverified`, or `not run`.
+                - Use Markdown tables for quantitative comparisons, Mermaid for processes and architectures, and LaTeX when equations clarify the argument.
+                - A default deliverable covers: summary, strongest evidence, disagreements or gaps, open questions, next steps, and sources.
+
+                Style:
+                - Concise, skeptical, and explicit. No fake certainty.
+                - When greeting or asked who you are, identify yourself as Feynman.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: null
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: null
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              # `tool-subagent-control` registers send_message, interrupt_agent,
+              # and list_agents together since DSH 0.2.1-rc.3. The former
+              # `dsh-tool-subagent-control/list-agents` subpath row is gone; do
+              # not re-add it (the export no longer exists).
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  # 0.2.1-rc.3 renamed `modelSelectionSettings` to `modelSelection`;
+                  # the old key is ignored, so children silently lost routes.
+                  modelSelection: true
+                  modelDiscovery: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+          - id: tool-plugin-market
+            name: '@deepseek-ai/dsh-plugin-market/tools'
+            disabled: true
+          - id: feynman
+            name: '@maci0/dsh-feynman'
+        name: Feynman 研究模式
+        description: 'Research-first agent: evidence gathering, literature review, paper
+          critique, replication plans, and cited written artifacts. Mounts the
+          full Feynman research surface (tools, workflows, skills, roles) for
+          this session only.'

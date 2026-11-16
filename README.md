@@ -26,6 +26,30 @@ Override a child from a profile patch keyed by the declaration id (`preset-feynm
 
 Each workflow queues a frozen, plugin-branded user message as the next model turn. Attachments are carried into that turn. Bare `/feynman` opens a subcommand picker; selecting a command that needs arguments returns its usage line.
 
+### Artifacts and layout
+
+Research state lives under one per-project artifact root:
+
+```text
+.feynman/                 # default artifact root
+  project.json            # records the layout
+  outputs/                # briefs, reviews, summaries, .plans/, .drafts/, .notes/
+  papers/                 # paper-style drafts
+  notes/session-logs/     # session logs
+  experiments/            # experiment code, autoresearch session files
+  fetch/                  # cached fetched sources (ignored by .feynman/.gitignore)
+```
+
+The layout is recorded in `.feynman/project.json`, so it survives sessions. A project that already has the upstream root layout (`outputs/` etc. at the project root) keeps it. `/feynman init` creates the layout; re-running is idempotent.
+
+```text
+/feynman init                 # .feynman/ layout, hidden from git
+/feynman init --track         # same layout, committed to git
+/feynman init --root .        # upstream layout at the project root
+```
+
+By default the artifact root is hidden from git through a managed `.gitignore` block. Ignored artifacts are deleted by `git clean -xdf`; use `--track` when the research record should be versioned. `grep` from the workspace root skips hidden directories, so pass the artifact root as `path` when searching for research artifacts.
+
 Stopping a review loop removes its queued round prompt. An already running turn finishes.
 
 | Command | Result |
@@ -38,10 +62,10 @@ Stopping a review loop removes its queued round prompt. An already running turn 
 | `replicate <paper-or-claim>` | Source-backed replication plan. Execution waits for an explicit environment choice. |
 | `recipe <task>` | Ranked ML recipes with result, dataset, hyperparameters, compute, implementation, availability checks and provenance. |
 | `compare <topic-or-sources>` | Evidence, agreement/disagreement, methodology and confidence matrix. |
-| `draft <topic \| --from-session>` | Paper-style draft under `papers/`; unsupported results remain gaps or TODOs. |
+| `draft <topic \| --from-session>` | Paper-style draft in the artifact root's `papers` directory (default `.feynman/papers/`); unsupported results remain gaps or TODOs. |
 | `autoresearch <idea>` | Bounded hypothesis → experiment → analysis → decision loop, with benchmark checks and durable experiment records. |
 | `summarize <source> [flags]` | Single-source summary of a paper, report, repository README, local file or PDF, with bounded reading and coverage notes. |
-| `log [focus]` | Durable session log under `notes/`: completed work, findings, open questions, artifact paths, next steps. Also loadable through `feynman_workflow` so an agent can write it without the slash command. |
+| `log [focus]` | Durable session log in the artifact root's `notes` directory (default `.feynman/notes/`): completed work, findings, open questions, artifact paths, next steps. Also loadable through `feynman_workflow` so an agent can write it without the slash command. |
 
 Prefix every command with `/feynman`.
 
@@ -67,7 +91,7 @@ Summarize controls count decoded characters: `--window-size` (6000), `--overlap`
 `feynman_search_content` reads content already stored in this session or by `feynman_fetch_content`: `offset`/`limit` page through a long document, `findText` locates passages (literal by default, `findMode: "regex"` for a pattern) with surrounding context.
 `feynman_web_search` adds the upstream search controls the host schema lacks: `queries`, `numResults` (1–20, default 5), `recencyFilter` (day/week/month/year), `domainFilter` (include, or `-` to exclude), and `includeContent`. It calls the DSH web seam per query, then filters and dedupes the returned sources; the host schema cannot filter provider-side, so it over-fetches and keeps undated sources (marked) rather than guessing they are stale. `includeContent` fetches and stores up to five pages for `feynman_search_content`. Use host `web_search` for a plain lookup.
 
-`feynman_source_check` gathers evidence for one claim: it searches, optionally fetches up to five pages, ranks sentences by shared content words (CJK claims match on character bigrams), and writes `outputs/<slug>-<hash>-source-check.md` plus a `.json` sidecar; the six-character hash keeps non-Latin claims in distinct files. It reports passages and a `status: "unclassified"` marker, never a verdict — the model reads the passages and cites the URL with the quoted text.
+`feynman_source_check` gathers evidence for one claim: it searches, optionally fetches up to five pages, ranks sentences by shared content words (CJK claims match on character bigrams), and writes `<artifact-root>/outputs/<slug>-<hash>-source-check.md` plus a `.json` sidecar; the six-character hash keeps non-Latin claims in distinct files. It reports passages and a `status: "unclassified"` marker, never a verdict — the model reads the passages and cites the URL with the quoted text.
 
 `feynman_workflow` lets an agent load and perform a workflow without a human slash command.
 
@@ -96,7 +120,7 @@ The bundled Alpha Hub client handles OAuth and refresh. Login displays its conse
 
 `/feynman search [query]` browses **stored web and fetched-source results in the current session**. `/feynman websearch <query>` queues live web research, preferring `feynman_web_search` when recency, domain, result-count, or page-content controls are needed. `/feynman curator on` asks the model to show retrieved URLs/snippets and wait for source selection before fetching or synthesis; `off` disables it. Curator state is session-local and ends with disposal/restart.
 
-`outputs` browses `outputs/`, `papers/`, `experiments/` and `notes/`, including older research artifacts. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` writes `AGENTS.md` and `notes/session-logs/README.md` from the upstream templates without a model turn, and never overwrites existing files (`created` vs `kept` is reported). `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` sets the session's reasoning effort through DSH model selection and validates the level against the route's advertised efforts when the adapter exposes them; it is a real setting, matching upstream's Pi `/thinking`, not a prompt hint.
+`outputs` browses the artifact root's `outputs`, `papers`, `experiments`, and `notes` directories, including older research artifacts in either layout. Plans and draft evidence remain under `outputs/.plans/` and `.drafts/`; summarization checkpoints use `.notes/`. `log` writes a durable session record. `init` writes `AGENTS.md`, the artifact root, and its session-log folders from the upstream templates without a model turn, and never overwrites existing files (`created` vs `kept` is reported). `init` accepts `--root <. | .feynman>` and `--track`/`--no-track`; re-running it is idempotent. `btw` injects non-waking side-question context; it does not start Pi's independent side-thread runtime. `thinking` sets the session's reasoning effort through DSH model selection and validates the level against the route's advertised efforts when the adapter exposes them; it is a real setting, matching upstream's Pi `/thinking`, not a prompt hint.
 
 ## Credentials
 

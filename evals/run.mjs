@@ -22,8 +22,9 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { buildPrompt, slugify } from '../prompts.js'
+import { DEFAULT_ARTIFACT_ROOT, MARKER_DIR, MARKER_FILE } from '../lib/project-paths.js'
 import { recallFor, scoreCitations } from './resolve.mjs'
 import { scoreWorkdir } from './score.mjs'
 
@@ -41,6 +42,7 @@ Options:
   --ids q01,q04          Questions to run (default: all in --questions).
   --questions <path>     Question set (default: evals/questions.jsonl).
   --workflow lit|deepresearch   Workflow to run (default: lit).
+  --layout feynman|upstream     Artifact layout: ${DEFAULT_ARTIFACT_ROOT}/ (default) or the project root.
   --results-dir <dir>    Where result files go (default: evals/results).
   --work-root <dir>      Where per-question workspaces and DSH_HOME live.
                          Default: $XDG_CACHE_HOME/dsh-feynman-evals or ~/.cache/dsh-feynman-evals.
@@ -68,6 +70,7 @@ function parseArgs(argv) {
     ids: undefined,
     questions: join(HERE, 'questions.jsonl'),
     workflow: 'lit',
+    layout: 'feynman',
     workRoot: join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'dsh-feynman-evals'),
     resultsDir: RESULTS,
     timeoutMin: 45,
@@ -89,6 +92,7 @@ function parseArgs(argv) {
       case '--ids': options.ids = next().split(',').map(id => id.trim()).filter(Boolean); break
       case '--questions': options.questions = resolve(next()); break
       case '--workflow': options.workflow = next(); break
+      case '--layout': options.layout = next(); break
       case '--work-root': options.workRoot = resolve(next()); break
       case '--results-dir': options.resultsDir = resolve(next()); break
       case '--timeout-min': options.timeoutMin = Number(next()); break
@@ -99,6 +103,7 @@ function parseArgs(argv) {
     }
   }
   if (!['lit', 'deepresearch'].includes(options.workflow)) throw new Error(`--workflow must be lit or deepresearch`)
+  if (!['feynman', 'upstream'].includes(options.layout)) throw new Error(`--layout must be feynman or upstream`)
   if (!Number.isFinite(options.timeoutMin) || options.timeoutMin <= 0) throw new Error('--timeout-min must be positive')
   return options
 }
@@ -182,10 +187,10 @@ function summary(rows, options, git) {
     `- Date: ${new Date().toISOString()}\n- Git: ${git.sha}${git.dirty ? ' (dirty)' : ''}\n- Questions: ${rows.length}\n` +
     `- Scores: done / plan / provenance fields / cites / valid / title / recall / sources / todos / blocked / wall seconds\n` +
     `- ${options.resolve ? 'Citation lookups: arXiv + Crossref + doi.org.' : 'Citation lookups skipped (--no-resolve): valid/title are null; recall is still local.'}\n\n` +
-    '| id | done | plan | prov | cites | valid | title | recall | sources | todos | blocked | wall | final | error |\n' +
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n'
+    '| id | layout | done | plan | prov | cites | valid | title | recall | sources | todos | blocked | wall | final | error |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n'
   const body = rows.map(row =>
-    `| ${row.id} | ${row.done} | ${row.plan} | ${row.provenance_fields}/8 | ${row.cites} | ${pct(row.valid)} | ${pct(row.title)} | ${pct(row.recall)} | ${row.sources} | ${row.todos} | ${row.blocked} | ${row.wall_seconds.toFixed(1)} | ${row.final ?? '—'} | ${row.error === undefined ? '' : row.error.slice(0, 80).replaceAll('|', '\\|')} |`,
+    `| ${row.id} | ${row.layout} | ${row.done} | ${row.plan} | ${row.provenance_fields}/8 | ${row.cites} | ${pct(row.valid)} | ${pct(row.title)} | ${pct(row.recall)} | ${row.sources} | ${row.todos} | ${row.blocked} | ${row.wall_seconds.toFixed(1)} | ${row.final ?? '—'} | ${row.error === undefined ? '' : row.error.slice(0, 80).replaceAll('|', '\\|')} |`,
   ).join('\n')
   const done = rows.filter(row => row.done === 1).length
   const blocked = rows.filter(row => row.blocked === 1).length
@@ -199,6 +204,19 @@ function resultPath(options) {
   let path = join(options.resultsDir, `${base}.jsonl`)
   for (let suffix = 2; existsSync(path); suffix += 1) path = join(RESULTS, `${base}-${suffix}.jsonl`)
   return path
+}
+
+/** Assemble one eval task: the marker's root plus the rendered brief. */
+export function buildTask(workflow, question, layout = 'feynman') {
+  const name = typeof layout === 'string' ? layout : layout?.layout ?? 'feynman'
+  const root = name === 'upstream' ? '' : DEFAULT_ARTIFACT_ROOT
+  return { root, task: buildPrompt(workflow, question, undefined, { root, note: '' }) }
+}
+
+/** Write the layout marker before the headless session starts. */
+export function writeLayoutMarker(workdir, root) {
+  mkdirSync(join(workdir, MARKER_DIR), { recursive: true })
+  writeFileSync(join(workdir, MARKER_DIR, MARKER_FILE), `${JSON.stringify({ version: 1, artifactRoot: root === '' ? '.' : root }, null, 2)}\n`)
 }
 
 async function main() {
@@ -228,7 +246,8 @@ async function main() {
     const slug = slugify(question.question)
     const workdir = join(options.workRoot, runId, question.id)
     mkdirSync(workdir, { recursive: true })
-    const task = buildPrompt(options.workflow, question.question)
+    const { root, task } = buildTask(options.workflow, question.question, options.layout)
+    writeLayoutMarker(workdir, root)
     writeFileSync(join(workdir, 'task.txt'), task)
     process.stderr.write(`[${question.id}] ${options.workflow} · ${slug}\n`)
     const run = await runHeadless({ task, cwd: workdir, patch, home, timeoutMs: options.timeoutMin * 60_000, bin })
@@ -244,6 +263,8 @@ async function main() {
       field: question.field,
       question: question.question,
       workflow: options.workflow,
+      layout: options.layout,
+      artifact_root: root === '' ? '.' : root,
       model: options.model,
       git: git.sha,
       dirty: git.dirty,
@@ -281,7 +302,9 @@ async function main() {
   console.log(markdown)
 }
 
-main().catch(error => {
-  console.error(`evals: ${error instanceof Error ? error.message : String(error)}`)
-  process.exitCode = 1
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => {
+    console.error(`evals: ${error instanceof Error ? error.message : String(error)}`)
+    process.exitCode = 1
+  })
+}

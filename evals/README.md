@@ -25,7 +25,7 @@ Results go to `evals/results/<date>-<workflow>-<model>.jsonl` (one row per quest
 | Column | Meaning |
 |---|---|
 | `done` | Final artifact **and** its provenance sidecar exist on disk. |
-| `plan` | `outputs/.plans/<slug>.md` exists. |
+| `plan` | `<artifact-root>/outputs/.plans/<slug>.md` exists (layout resolved from `.feynman/project.json`). |
 | `provenance_fields` | How many of the 8 required provenance labels are present (Date, Rounds, Sources consulted/accepted/rejected, Verification, Plan, Research files). |
 | `sources` | Unique URLs, preferring the document's Sources/References section. |
 | `cites` | Distinct arXiv IDs and DOIs in the final artifact. arXiv needs an `arXiv:`/URL prefix; arXiv's own DOI prefix is resolved as an arXiv id. |
@@ -59,7 +59,7 @@ Nothing is installed, no profile file is edited, and the user's real `$DSH_HOME`
 
 ## Artifact naming
 
-The scorer prefers upstream's `outputs/<slug>.md` (deepresearch and lit) with `outputs/<slug>.provenance.md`, the `papers/<slug>.md` fallback, and still accepts this plugin's legacy `outputs/<slug>-brief.md` and `outputs/<slug>-lit-review.md` so older runs remain scorable. Provenance is looked up next to the final artifact and by slug. A run that writes the wrong name scores `done: 0`, which is the point.
+The scorer resolves the workspace layout from `.feynman/project.json` (legacy root-layout evidence also selects the project root) and then looks under that root. It prefers upstream's `outputs/<slug>.md` (deepresearch and lit) with `outputs/<slug>.provenance.md`, the `papers/<slug>.md` fallback, and still accepts this plugin's legacy `outputs/<slug>-brief.md` and `outputs/<slug>-lit-review.md` so older runs remain scorable. Provenance is looked up next to the final artifact and by slug. A run that writes the wrong name or the wrong root scores `done: 0`, which is the point. `run.mjs --layout feynman|upstream` writes the matching marker before the headless session starts; `--score-only` resolves it again.
 
 ## Comparing runs
 

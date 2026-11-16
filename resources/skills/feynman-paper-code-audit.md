@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=audit and the user’s target as input, th
 
 Agents used: `researcher`, `verifier`
 
-Output: audit report in `outputs/`.
+Output: audit report in `<artifact-root>/outputs/`. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

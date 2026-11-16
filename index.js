@@ -12,6 +12,8 @@
 import { WORKFLOWS, SESSION_COMMANDS, THINKING_LEVELS, buildPrompt, parseLoopArgs, parseSummarizeArgs, loopFollowupPrompt } from './prompts.js'
 
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
@@ -25,6 +27,19 @@ import { describeScaffold, scaffoldProject } from './lib/init-scaffold.js'
 import { createContentStore } from './lib/content-store.js'
 import { alphaCommand } from './lib/alpha-command.js'
 import { createWorkflowTool } from './lib/workflow-tool.js'
+import {
+  artifactDir,
+  DEFAULT_ARTIFACT_ROOT,
+  hasArtifacts,
+  layoutLabel,
+  legacyArtifacts,
+  MARKER_DIR,
+  normalizeRoot,
+  resolveLayout,
+  workspaceRoot,
+} from './lib/project-paths.js'
+import { checkIgnore, isWorkTree, readManagedBlock } from './lib/project-git.js'
+import { looksLikeOldFeynmanGuide } from './lib/init-scaffold.js'
 
 export const name = 'feynman'
 // The review-loop driver resolves agents from the registry on turn/end;
@@ -218,6 +233,38 @@ async function keysHandler(invocation, ctx, state) {
 
 function err(text) { return { kind: 'error', text } }
 
+/** Resolve one session's artifact layout; a session without a workspace keeps upstream paths. */
+function layoutFor(ctx, session) {
+  const cwd = workspaceRoot(ctx, session)
+  if (!cwd) return { root: '', source: 'default', marker: 'missing', detail: 'no workspace' }
+  return { ...resolveLayout(cwd), cwd }
+}
+
+/** `/feynman init` argument grammar; the command is deterministic, so parsing lives in code. */
+const INIT_USAGE = `Usage: /feynman init [--root <.|${DEFAULT_ARTIFACT_ROOT}>] [--track | --no-track]`
+
+function parseInitArgs(rawInput) {
+  const tokens = rawInput.trim().split(/\s+/).filter(Boolean)
+  let root
+  let tracking
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === '--root') {
+      if (root !== undefined) return { error: INIT_USAGE }
+      const normalized = normalizeRoot(tokens[index + 1])
+      if (normalized === null) return { error: `Only \`.\` and \`${DEFAULT_ARTIFACT_ROOT}\` are supported for --root.` }
+      root = normalized === '' ? '.' : normalized
+      index += 1
+    } else if (token === '--track' || token === '--no-track') {
+      if (tracking !== undefined) return { error: INIT_USAGE }
+      tracking = token === '--track' ? 'track' : 'no-track'
+    } else {
+      return { error: INIT_USAGE }
+    }
+  }
+  return { root, tracking }
+}
+
 /**
  * Single dispatcher behind `/feynman`. The first token names a workflow or
  * session subcommand; the rest is that subcommand's raw input. Attachments
@@ -233,7 +280,7 @@ function researchHandler(invocation, ctx, sessionHandlers, state) {
   }
   if (!name) return helpHandler({ ...invocation, rawInput: '' })
   const subInvocation = { ...invocation, rawInput: rest }
-  if (Object.hasOwn(WORKFLOWS, name)) return workflowHandler(name, subInvocation, state)
+  if (Object.hasOwn(WORKFLOWS, name)) return workflowHandler(name, subInvocation, state, ctx)
   const session = Object.hasOwn(sessionHandlers, name) ? sessionHandlers[name] : undefined
   if (session) return session(subInvocation, ctx)
   return err(`Unknown subcommand "${sub}". Usage: /feynman <${[...Object.keys(WORKFLOWS), ...Object.keys(SESSION_COMMANDS)].join(' | ')}>.`)
@@ -248,8 +295,9 @@ function queuesMessage(name, rest) {
   return MESSAGE_SESSION_COMMANDS.has(name)
 }
 
-function workflowHandler(kind, invocation, state) {
+function workflowHandler(kind, invocation, state, ctx) {
   const spec = WORKFLOWS[kind]
+  const layout = layoutFor(ctx, invocation.agent?.session)
   const args = invocation.rawInput.trim()
   const usage = `Usage: /feynman ${kind} ${spec.hint}`
   // `/log` is the one workflow whose upstream form takes no argument.
@@ -270,29 +318,29 @@ function workflowHandler(kind, invocation, state) {
     if (parsed.unsupported.length > 0) {
       return err(`Unsupported flag(s): ${parsed.unsupported.join(', ')}. See \`Usage: /feynman ${kind} ${spec.hint}\`.`)
     }
-    const body = buildPrompt(kind, parsed, liveRefs(state))
+    const body = buildPrompt(kind, parsed, liveRefs(state), layout)
     invocation.agent.followup(userMessage(invocation, `${kind}: ${args}\n\n${body}`))
-    return { kind: 'success', text: `/feynman ${kind} workflow started. Output lands in outputs/.` }
+    return { kind: 'success', text: `/feynman ${kind} workflow started. Output lands in ${artifactDir(layout.root, 'outputs')}/.` }
   }
   const body = kind === 'review-loop'
-    ? reviewLoopPrompt(invocation, args, state)
-    : buildPrompt(kind, args, liveRefs(state))
+    ? reviewLoopPrompt(invocation, args, state, layout)
+    : buildPrompt(kind, args, liveRefs(state), layout)
   if (body === null) return err(usage)
   const message = userMessage(invocation, `${kind}: ${args}\n\n${body}`)
   invocation.agent.followup(message)
   // The round's turn is the one that appends this exact message.
   if (kind === 'review-loop') state.loops.get(invocation.agent.session.id).pending = message.id
-  return { kind: 'success', text: `/feynman ${kind} workflow started. Output lands in outputs/.` }
+  return { kind: 'success', text: `/feynman ${kind} workflow started. Output lands in ${artifactDir(layout.root, 'outputs')}/.` }
 }
 
-function reviewLoopPrompt(invocation, args, state) {
+function reviewLoopPrompt(invocation, args, state, layout) {
   const { target, rounds } = parseLoopArgs(args)
   if (!target) return null
   const previous = state.loops.get(invocation.agent.session.id)
   if (previous?.pending !== undefined) invocation.agent.inbox?.remove(previous.pending)
   // `pending`: id of the queued round message; `open`: its turn has started.
   state.loops.set(invocation.agent.session.id, { target, rounds, round: 1, pending: undefined, open: false })
-  const brief = buildPrompt('review-loop', target, liveRefs(state))
+  const brief = buildPrompt('review-loop', target, liveRefs(state), layout)
   return `${brief}\n\nRound 1 of ${rounds}; follow-ups will drive re-review.`
 }
 
@@ -339,18 +387,58 @@ async function doctorHandler(invocation, ctx, state) {
   try { await import('@llamaindex/liteparse'); lines.push('- Native document parser: available') }
   catch { lines.push('- Native document parser: unavailable on this installation/platform; check LiteParse optional dependencies') }
   lines.push(`- Pandoc (preview): ${await pandocState()}`)
+  const layout = layoutFor(ctx, invocation.agent?.session)
+  lines.push(`- Artifact root: ${layoutLabel(layout.root)} (source: ${layout.source})`)
+  lines.push(`- Layout marker: ${layout.marker}${layout.detail ? ` (${layout.detail})` : ''}`)
+  if (layout.cwd) {
+    const workTree = isWorkTree(layout.cwd)
+    if (workTree.ok) {
+      const probe = `${artifactDir(layout.root, 'outputs')}/.probing`
+      const ignore = checkIgnore(layout.cwd, probe, { verbose: true })
+      lines.push(`- Git ignore: ${ignore.ignored ? 'ignored' : 'not ignored'}${ignore.raw ? ` (${ignore.raw})` : ''}`)
+      if (ignore.ignored && hasArtifacts(layout.cwd, layout.root)) {
+        lines.push('- Artifact root is git-ignored; git clean -xdf deletes research artifacts. Use /feynman init --track to version them.')
+      }
+      try {
+        const block = readManagedBlock(readFileSync(join(layout.cwd, '.gitignore'), 'utf8'))
+        if (block) lines.push(`- Managed .gitignore block: ${block.truncated ? 'truncated' : `${block.lines.length} line(s)`}`)
+      } catch { /* no .gitignore */ }
+    } else {
+      lines.push(`- Git: ${workTree.reason === 'git-not-found' ? 'git unavailable' : 'not a repository'}`)
+    }
+    const legacy = legacyArtifacts(layout.cwd)
+    if (legacy.present.length) lines.push(`- Legacy artifacts: ${legacy.present.join(', ')}`)
+    if (layout.root !== '') {
+      try {
+        if (looksLikeOldFeynmanGuide(readFileSync(join(layout.cwd, 'AGENTS.md'), 'utf8'))) {
+          lines.push(`- AGENTS.md: old project-root layout (see ${MARKER_DIR}/AGENTS.template.md)`)
+        }
+      } catch { /* no AGENTS.md */ }
+    }
+  }
   return { kind: 'success', text: lines.join('\n') }
 }
 
 async function statusHandler(invocation, ctx, state) {
   if (invocation.rawInput.trim()) return err('Usage: /feynman status (no arguments)')
   const refs = liveRefs(state)
+  const layout = layoutFor(ctx, invocation.agent?.session)
+  const workTree = layout.cwd ? isWorkTree(layout.cwd) : undefined
+  const git = !layout.cwd
+    ? 'no workspace'
+    : !workTree.ok
+      ? workTree.reason === 'git-not-found' ? 'git unavailable' : 'not a repository'
+      : checkIgnore(layout.cwd, `${artifactDir(layout.root, 'outputs')}/.probing`).ignored ? 'ignored' : 'tracked'
+  const legacy = layout.cwd ? legacyArtifacts(layout.cwd) : { present: [] }
   return {
     kind: 'success',
     text: [
       'Feynman setup summary:',
       ...(await keySummary(ctx, refs)).map((line) => `- ${line}`),
       `- Key refs: hfTokenEnv=${refs.hfTokenEnv} alphaxivTokenEnv=${refs.alphaxivTokenEnv} (row config; invalid names fail at load)`,
+      `- Artifact root: ${layoutLabel(layout.root)} (source: ${layout.source})`,
+      `- Git: ${git}`,
+      ...(legacy.present.length ? [`- Legacy artifacts: ${legacy.present.join(', ')}`] : []),
       '- Model route: one profile route (see the agent-default-model row); per-turn overrides are not supported here.',
       `- Thinking levels: ${THINKING_LEVELS.join(', ')} (note a level with /feynman thinking <level>).`,
       '- For the full checklist run /feynman doctor.',
@@ -374,21 +462,33 @@ function followupHandler(invocation, prompt, ack) {
   return { kind: 'success', text: ack }
 }
 
-async function initHandler(invocation) {
-  if (invocation.rawInput.trim()) return err('Usage: /feynman init (no arguments)')
-  const root = invocation.agent?.session?.header?.cwd
-  if (!root) return err('No workspace is available; open a project session and rerun /feynman init')
+async function initHandler(invocation, ctx) {
+  const parsed = parseInitArgs(invocation.rawInput)
+  if (parsed.error) return err(parsed.error)
+  const cwd = workspaceRoot(ctx, invocation.agent?.session)
+  if (!cwd) return err('No workspace is available; open a project session and rerun /feynman init')
   try {
-    return { kind: 'success', text: describeScaffold(await scaffoldProject(root)) }
+    const result = await scaffoldProject(cwd, parsed)
+    if (result.error) return err(describeScaffold(result))
+    return { kind: 'success', text: describeScaffold(result) }
   } catch (error) {
     return err(`Could not scaffold the project: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
-function outputsHandler(invocation) {
-  return followupHandler(invocation,
-    'List research artifacts under outputs/, papers/, experiments/, and notes/ when present (group outputs by workflow: <slug>.md deepresearch/lit, *-comparison.md compare, *-review.md review, *-audit.md audit, *-replication-plan.md replicate, *-recipe.md recipe, *-draft.md draft, *-summary.md summarize). Include provenance, plans, notes, and any older research artifacts found. Summarize what each contains in one line; list paths, not raw source bodies.',
-    'Artifact listing queued as the next turn.')
+function outputsPrompt(layout) {
+  const current = ['outputs', 'papers', 'experiments', 'notes']
+    .map((dir) => `${artifactDir(layout.root, dir)}/`)
+    .join(', ')
+  const older = layout.root === ''
+    ? ['outputs', 'papers', 'notes'].map((dir) => artifactDir(DEFAULT_ARTIFACT_ROOT, dir))
+    : ['outputs', 'papers', 'notes']
+  return `List research artifacts under ${current} when present (group by workflow: <slug>.md deepresearch/lit, *-comparison.md compare, *-review.md review, *-audit.md audit, *-replication-plan.md replicate, *-recipe.md recipe, *-draft.md draft, *-summary.md summarize). Also check these other locations when present: ${older.join(', ')}; list a project-root experiments/ only when it contains autoresearch.*, not when it is the repository's own code directory. Use ls -a, exact paths, or glob; grep from the workspace root skips hidden directories, so pass the artifact root as its path. One line per artifact with its path; no raw source bodies.`
+}
+
+function outputsHandler(invocation, ctx) {
+  const layout = layoutFor(ctx, invocation.agent?.session)
+  return followupHandler(invocation, outputsPrompt(layout), 'Artifact listing queued as the next turn.')
 }
 
 function btwHandler(invocation) {
@@ -443,15 +543,15 @@ export function apply(ctx, config = {}) {
     scope.tools.register(createRoleTool())
     scope.tools.register(createFetchContentTool(scope.tools, { store: state.content }))
     scope.tools.register(createSearchContentTool({ store: state.content }))
-    scope.tools.register(createSourceCheckTool(scope.tools, { store: state.content }))
+    scope.tools.register(createSourceCheckTool(scope.tools, { store: state.content, resolveRoot: (session) => layoutFor(ctx, session) }))
     scope.tools.register(createWebSearchTool({ getWeb: () => service(ctx, 'web'), store: state.content }))
-    scope.tools.register(createWorkflowTool(() => liveRefs(state)))
+    scope.tools.register(createWorkflowTool(() => liveRefs(state), (session) => layoutFor(ctx, session)))
     if (!scope.tools.schemas?.().some((tool) => tool.name === 'code_search')) scope.tools.register(createCodeSearchTool(scope.tools))
   })
   ctx.inject?.(['skills'], (scope) => scope.skills.registerProvider(createResearchSkillProvider))
   ctx.inject?.(['systemPrompt'], (scope) => scope.systemPrompt.section({
     name: 'feynman-research', order: 700, interpolate: false,
-    text: () => `Research date (UTC): ${new Date().toISOString().slice(0, 10)}. Prefer primary evidence; distinguish source assertions, inferences, and verified checks. Research tools: feynman_fetch_content for PDFs, GitHub repositories/issues, and multi-URL batches; feynman_search_content to page (offset/limit) or search (findText) a long fetched source; feynman_source_check to gather claim-level passages into outputs/<slug>-source-check.md (read them; the artifact is not a verdict); feynman_science_database_search, Hugging Face inspection, document_parse/search/screenshot, authenticated alpha tools when visible. Load feynman_research_role before role-specific delegation; use DSH's actual subagent schema and consume completed results before synthesis. Never invent measurements or citations; keep numeric claims and visuals tied to raw evidence. Write final research artifacts and provenance to disk and check they exist before delivery. Read existing CHANGELOG.md before resuming substantial work; append meaningful progress and blockers, not trivial one-shot changes.`,
+    text: () => `Research date (UTC): ${new Date().toISOString().slice(0, 10)}. Prefer primary evidence; distinguish source assertions, inferences, and verified checks. Research tools: feynman_fetch_content for PDFs, GitHub repositories/issues, and multi-URL batches; feynman_search_content to page (offset/limit) or search (findText) a long fetched source; feynman_source_check to gather claim-level passages into the project artifact root (${artifactDir(DEFAULT_ARTIFACT_ROOT, 'outputs')}/<slug>-source-check.md by default) (read them; the artifact is not a verdict); feynman_science_database_search, Hugging Face inspection, document_parse/search/screenshot, authenticated alpha tools when visible. Load feynman_research_role before role-specific delegation; use DSH's actual subagent schema and consume completed results before synthesis. Never invent measurements or citations; keep numeric claims and visuals tied to raw evidence. Write final research artifacts and provenance to disk and check they exist before delivery. Read existing CHANGELOG.md before resuming substantial work; append meaningful progress and blockers, not trivial one-shot changes.`,
   }))
   ctx.effect(() => () => { state.disposed = true; state.loginProcess?.kill() })
   ctx.on('tools/post-execute', async (exec, result, next) => {
@@ -497,7 +597,7 @@ export function apply(ctx, config = {}) {
       },
       websearch: (inv) => {
         if (!inv.rawInput.trim()) return err('Usage: /feynman websearch <query>')
-        return followupHandler(inv, `Run a web search with the user's queries. Prefer feynman_web_search when the search needs a recency window, domain include/exclude, more than five results, or page content; use host web_search for a plain lookup. Show source URLs and snippets; ${state.curator.has(inv.agent.session.id) ? 'wait for source selection before fetching or synthesis' : 'fetch and inspect the most relevant primary sources, then summarize with citations'}. Save findings and search provenance under outputs/.notes/.`, 'Web research queued as the next turn.')
+        return followupHandler(inv, `Run a web search with the user's queries. Prefer feynman_web_search when the search needs a recency window, domain include/exclude, more than five results, or page content; use host web_search for a plain lookup. Show source URLs and snippets; ${state.curator.has(inv.agent.session.id) ? 'wait for source selection before fetching or synthesis' : 'fetch and inspect the most relevant primary sources, then summarize with citations'}. Save findings and search provenance under ${artifactDir(layoutFor(ctx, inv.agent.session).root, 'outputs', '.notes')}/.`, 'Web research queued as the next turn.')
       },
       curator: (inv) => {
         const mode = inv.rawInput.trim().toLowerCase()

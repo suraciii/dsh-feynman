@@ -9,4 +9,4 @@ Load `feynman_workflow` with workflow=lit and the user’s target as input, then
 
 Agents used: `researcher`, `verifier`, `reviewer`
 
-Output: literature review in `outputs/` with `.provenance.md` sidecar.
+Output: literature review in `<artifact-root>/outputs/` with `.provenance.md` sidecar. `<artifact-root>` is the project artifact root recorded in `.feynman/project.json` (default `.feynman/`; `.` keeps the upstream project-root layout).

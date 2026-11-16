@@ -1,6 +1,6 @@
 {
   "name": "@maci0/dsh-feynman",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
